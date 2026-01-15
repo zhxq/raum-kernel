@@ -458,29 +458,20 @@ inline static void biza_promote_entry(struct biza_target *bt, struct biza_pred_e
 // Update LRU in every write
 void biza_update_pred(struct biza_target *bt, sector_t lcn)
 {   
-    // pr_err("biza_update_pred 1\n");
     struct biza_htable_entry *tb_etr = NULL;
     struct biza_pred_entry *pred_etr = NULL;
-    // pr_err("biza_update_pred 2\n");
+
     mutex_lock(&bt->pred_lock);
-    // pr_err("biza_update_pred 3\n");
     bt->wrt_time++;
-    // pr_err("biza_update_pred 4\n");
+
     tb_etr = biza_htable_find(bt, lcn);
-    // pr_err("biza_update_pred 5\n");
     if(!tb_etr) biza_insert_pred_set(bt, lcn);
     else {   // Already in LRU
-        // pr_err("biza_update_pred 6\n");
         pred_etr = tb_etr->pred_entry;
-        // pr_err("biza_update_pred 7\n");
         biza_update_entry(bt, tb_etr->pred_entry, lcn);
-        // pr_err("biza_update_pred 8\n");
         biza_promote_entry(bt, pred_etr);
-        // pr_err("biza_update_pred 9\n");
     }
-    // pr_err("biza_update_pred 10\n");
     mutex_unlock(&bt->pred_lock);
-    // pr_err("biza_update_pred 11\n");
 }
 
 
