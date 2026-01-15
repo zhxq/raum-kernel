@@ -213,6 +213,7 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn, sector_t pcn
     if(!stripe) {
         stripe = biza_alloc_stripe(bt);
         xa_store(&bt->map->stripe_table, no, stripe, GFP_ATOMIC);
+        // pr_err("data creating stripe: 0x%llx\n", no);
     }
     stripe->data_lcns[slot] = lcn;
     stripe->used++;
@@ -244,8 +245,10 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn, sector_t pcn
                                     &org_zone_idx, &org_offset);
                     bt->devs[org_drive_idx].zones[org_zone_idx].nr_invalid_chunks++;
                 }
-                biza_free_stripe(org_stripe);
+                
+                // pr_err("freeing stripe: 0x%llx\n", org_stripe_no);
                 xa_erase(&bt->map->stripe_table, org_stripe_no);
+                biza_free_stripe(org_stripe);
             }
         }
     }
@@ -255,18 +258,32 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn, sector_t pcn
 void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn, uint64_t no, uint8_t slot)
 {   
     struct biza_stripe *stripe = NULL;
+    sector_t old_pcn;
 
     stripe = xa_load(&bt->map->stripe_table, no);
     if(!stripe) {
         BUG_ON(slot);
         stripe = biza_alloc_stripe(bt);
         xa_store(&bt->map->stripe_table, no, stripe, GFP_ATOMIC);
+        // pr_err("parity creating stripe: 0x%llx\n", no);
+    }else{
+        
+        // Invalidate old entry
+        old_pcn = stripe->parity_pcns[slot];
+        // pr_err("Write parity: original: 0x%llx, new: 0x%llx\n", old_pcn, pcn);
+        if (old_pcn != BIZA_MAP_INVALID && old_pcn != BIZA_MAP_UNMAPPED){
+            bt->map->p2l[old_pcn].chunk_no = BIZA_MAP_INVALID;
+            bt->map->p2l[old_pcn].stripe_no = BIZA_MAP_INVALID;
+            bt->map->p2l[old_pcn].slot = (uint8_t)BIZA_MAP_INVALID;
+        }
+        
     }
 
     // stripe->parity_pcns[slot] == BIZA_MAP_UNMAPPED
     bt->map->p2l[pcn].chunk_no = BIZA_MAP_PARITY;
     bt->map->p2l[pcn].stripe_no = no;
     bt->map->p2l[pcn].slot = slot;
+    
     stripe->parity_pcns[slot] = pcn;
 }
 
@@ -280,6 +297,12 @@ void biza_map_remap(struct biza_target *bt, sector_t src_pcn, sector_t dst_pcn)
     uint8_t slot;
     struct biza_stripe *stripe = NULL;
 
+
+    // Debug
+    uint8_t read_drive_idx = 0, passed_drive_idx = 0;
+    uint32_t read_zone_idx = 0, passed_zone_idx = 0;
+    uint64_t read_offset = 0, passed_offset = 0;
+
     lcn = bt->map->p2l[src_pcn].chunk_no;
     // be modified while GC
     if(lcn == BIZA_MAP_INVALID || lcn == BIZA_MAP_UNMAPPED) return;
@@ -288,14 +311,37 @@ void biza_map_remap(struct biza_target *bt, sector_t src_pcn, sector_t dst_pcn)
         stripe_no = bt->map->p2l[src_pcn].stripe_no;
         slot = bt->map->p2l[src_pcn].slot;
         stripe = xa_load(&bt->map->stripe_table, stripe_no);
-        
+
         // BUG_ON(!stripe);
         // BUG_ON(stripe->parity_pcns[slot] != src_pcn);
 
-        stripe->parity_pcns[slot] = dst_pcn;
+        if (!stripe){
+            pr_err("!stripe lcn: 0x%llx, src pcn: 0x%llx, dst pcn: 0x%llx, stripe_no: 0x%llx, slot: 0x%llx\n", lcn, src_pcn, dst_pcn, stripe_no, slot);
+            biza_pcn_to_idx(bt, src_pcn, &passed_drive_idx, &passed_zone_idx, &passed_offset);
+            pr_err("read: src_pcn: 0x%llx, drive_idx: %u, zone_idx: %u, offset: 0x%llx; passed: src_pcn: 0x%llx, drive_idx: %u, zone_idx: %u, offset: 0x%llx\n", 
+               BIZA_MAP_INVALID , read_drive_idx, read_zone_idx, read_offset, src_pcn, passed_drive_idx, passed_zone_idx, passed_offset);
+        }else{
+            if (stripe->parity_pcns[slot] != src_pcn){
+                pr_err("mismatch src_pcn -- lcn: 0x%llx, src pcn: 0x%llx, current slot pcn: 0x%llx, dst pcn: 0x%llx, stripe_no: 0x%llx, slot: 0x%llx\n", lcn, src_pcn, stripe->parity_pcns[slot], dst_pcn, stripe_no, slot);
+                biza_pcn_to_idx(bt, stripe->parity_pcns[slot], &read_drive_idx, &read_zone_idx, &read_offset);
+                biza_pcn_to_idx(bt, src_pcn, &passed_drive_idx, &passed_zone_idx, &passed_offset);
+                pr_err("read: src_pcn: 0x%llx, drive_idx: %u, zone_idx: %u, offset: 0x%llx; passed: src_pcn: 0x%llx, drive_idx: %u, zone_idx: %u, offset: 0x%llx\n", 
+                stripe->parity_pcns[slot], read_drive_idx, read_zone_idx, read_offset, src_pcn, passed_drive_idx, passed_zone_idx, passed_offset);
+            }
+            stripe->parity_pcns[slot] = dst_pcn;
+            // pr_err("Remap parity: original: 0x%llx, new: 0x%llx\n", src_pcn, dst_pcn);
+        }
+        
     }
     else {  // data chunk
         // BUG_ON(bt->map->l2p[lcn].chunk_no != src_pcn);
+        if (bt->map->l2p[lcn].chunk_no != src_pcn){
+            pr_err("mismatch src_pcn -- lcn: 0x%llx, src pcn: 0x%llx, current lcn -> pcn: 0x%llx, dst pcn: 0x%llx, stripe_no: 0x%llx, slot: 0x%llx\n", lcn, src_pcn, stripe->parity_pcns[slot], dst_pcn, stripe_no, slot);
+            biza_pcn_to_idx(bt, bt->map->l2p[lcn].chunk_no, &read_drive_idx, &read_zone_idx, &read_offset);
+            biza_pcn_to_idx(bt, src_pcn, &passed_drive_idx, &passed_zone_idx, &passed_offset);
+            pr_err("read: src_pcn: 0x%llx, drive_idx: %u, zone_idx: %u, offset: 0x%llx; passed: src_pcn: 0x%llx, drive_idx: %u, zone_idx: %u, offset: 0x%llx\n", 
+            bt->map->l2p[lcn].chunk_no, read_drive_idx, read_zone_idx, read_offset, src_pcn, passed_drive_idx, passed_zone_idx, passed_offset);
+        }
         bt->map->l2p[lcn].chunk_no = dst_pcn;
     }
     bt->map->p2l[dst_pcn].chunk_no = bt->map->p2l[src_pcn].chunk_no;

@@ -1,13 +1,6 @@
 #include "dm-biza.h"
 
-// Should do gc?
-static inline bool biza_should_gc(struct biza_target *bt) 
-{   
-    BUG_ON(bt->gc->nr_free_zones > bt->params->nr_zones_per_drive * bt->params->nr_drives);
-    BUG_ON(bt->gc->p_free_zones > 100);
 
-    return bt->gc->p_free_zones < bt->gc_limit_high;
-}
 
 inline void biza_schedule_gc(struct biza_target *bt) 
 {
@@ -122,6 +115,8 @@ static void biza_gc_move_valid_data(struct biza_target *bt, uint8_t src_drive_id
     dst_dev = &bt->devs[dst_drive_idx];
     dst_zone = &dst_dev->zones[dst_zone_idx];
 
+    pr_err("GC source dev: %u, zone: %llu; dest dev: %u, zone: %llu\n", src_drive_idx, src_zone_idx, dst_drive_idx, dst_zone_idx);
+
     BUG_ON(src_zone->cond != BLK_ZONE_COND_FULL);
     BUG_ON(dst_zone->cond == BLK_ZONE_COND_FULL);
 
@@ -142,7 +137,7 @@ static void biza_gc_move_valid_data(struct biza_target *bt, uint8_t src_drive_id
             dst.count = bt->params->chunk_size_sector;
 
             set_bit(BIZA_GC_KCOPY, &bt->gc->flags);
-            dm_kcopyd_copy(bt->gc->kc, &src, 1, &dst, flags,bt_gc_kcopy_end, bt->gc);
+            dm_kcopyd_copy(bt->gc->kc, &src, 1, &dst, flags, bt_gc_kcopy_end, bt->gc);
 
             dst_offset = (dst_zone->wp - dst_zone->start) >> bt->params->chunk_size_sector_shift;
             // dst_offset = (atomic64_read(&dst_zone->wp) - dst_zone->start) >> bt->params->chunk_size_sector_shift;
@@ -158,6 +153,7 @@ static void biza_gc_move_valid_data(struct biza_target *bt, uint8_t src_drive_id
             // if(atomic64_read(&dst_zone->wp) >= dst_zone->start + dst_zone->capacity) {
                 dst_zone->cond = BLK_ZONE_COND_FULL;
                 biza_gc_untag_isolation_domain(bt, dst_drive_idx, dst_zone_idx);
+                biza_finish_zone(bt, dst_dev, dst_zone_idx); 
                 dst_dev->open_zones[dst_oz_idx] = biza_open_empty_zone(bt, dst_dev, true, BIZA_GC);
                 if(dst_dev->open_zones[dst_oz_idx] == dst_dev->nr_zones) BUG_ON(1);
                 dst_zone_idx = dst_dev->open_zones[dst_oz_idx];
@@ -172,16 +168,18 @@ static void biza_gc_move_valid_data(struct biza_target *bt, uint8_t src_drive_id
 }
 
 // Entry of GC
-static int biza_do_gc(struct biza_target *bt)
+int biza_do_gc(struct biza_target *bt)
 {   
     uint8_t victim_drive_idx;
     uint32_t victim_zone_idx;
     int ret = 0;
-
+    pr_err("Doing GC... out\n");
     ret = biza_select_victim(bt, &victim_drive_idx, &victim_zone_idx);
     if(ret) {
+        pr_err("Doing GC... in\n");
         biza_gc_move_valid_data(bt, victim_drive_idx, victim_zone_idx);
         biza_reset_zone(bt, &bt->devs[victim_drive_idx], victim_zone_idx, false);
+        pr_err("Finished GC... in\n");
     }
     
     return 0;
@@ -212,15 +210,18 @@ static void biza_gc_work(struct work_struct *work)
     struct biza_dev *dev;
 
     if(WRITE_AMP_STAT) {
-        pr_err("user_send %lld, data write %lld, parity write %lld, data in place update %lld, parity in place upate %lld\n",
+        // pr_err("user_send %lld, data write %lld, parity write %lld, data in place update %lld, parity in place upate %lld\n",
         atomic64_read(&bt->user_send), atomic64_read(&bt->data_write), atomic64_read(&bt->parity_write), 
-        atomic64_read(&bt->data_in_place_update), atomic64_read(&bt->parity_in_place_update));
+        atomic64_read(&bt->data_in_place_update), atomic64_read(&bt->parity_in_place_update);
     }
 
     if (!biza_should_gc(bt)) {
+        pr_err("No GC!!!!\n");
         mod_delayed_work(gc->wq, &gc->work, BIZA_GC_DETECT_PERIOD);
 		return;
     }
+
+    pr_err("Now should do GC!\n");
 
     /** GC throttle **/
     if(biza_target_idle(bt) || bt->gc->p_free_zones < bt->gc_limit_low) {
@@ -374,7 +375,7 @@ int biza_ctr_gc(struct biza_target *bt)
 
     /* GC work */
     INIT_DELAYED_WORK(&gc->work, biza_gc_work);
-    gc->wq = alloc_ordered_workqueue("biza_gcwq", WQ_MEM_RECLAIM);
+    gc->wq = alloc_ordered_workqueue("biza_gcwq", WQ_UNBOUND | WQ_MEM_RECLAIM);
     if (!gc->wq) {
         pr_err("dm-biza: Cannot alloc gc workqueue\n");
         ret = -ENOMEM;

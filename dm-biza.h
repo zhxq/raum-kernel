@@ -1,6 +1,9 @@
 #ifndef DM_BIZA_H
 #define DM_BIZA_H
 
+#include <linux/fs.h>
+#include <linux/file.h>
+#include <linux/uio.h>
 #include <linux/types.h>
 #include <linux/blkdev.h>
 #include <linux/device-mapper.h>
@@ -39,9 +42,9 @@
 #define BIZA_MAP_INVALID (BIZA_MAP_UNMAPPED - 1)
 #define BIZA_MAP_PARITY (BIZA_MAP_UNMAPPED - 2)
 
-#define BIZA_ZRWASZ 1000                // in KiB
+#define BIZA_ZRWASZ 1024                // in KiB
 #define BIZA_NR_MAX_OPEN_ZONE 14         // per drive
-#define BIZA_NR_ISOLATION_DOMAIN 2  // per drive
+#define BIZA_NR_ISOLATION_DOMAIN 2  // number of channels per drive
 /** BIZA-DEBUG **/
 #define BIZA_HIGH_LAT_AWARE_THRESHOLD 3
 #define BIZA_ISO_DOMAIN_CONFIDENCE 3
@@ -66,7 +69,7 @@
 #define BIZA_LIFETIME_AWARE_REUSE_CNT_THRESHOLD 3
 #define BIZA_ZRWA_AWARE_REUSE_DIST_THRESHOLD 4096
 
-#define WRITE_AMP_STAT 0
+#define WRITE_AMP_STAT 1
 
 
 // parameters
@@ -401,6 +404,7 @@ struct biza_io_work {
 /** Functions defined in dm-biza-target.c **/
 int biza_reset_zone(struct biza_target *bt, struct biza_dev *dev, uint32_t zone_idx, bool all);
 uint32_t biza_open_empty_zone(struct biza_target *bt, struct biza_dev *dev, bool zrwa, biza_aware_type type);
+int biza_finish_zone(struct biza_target *bt, struct biza_dev *dev, uint32_t zone_idx);
 
 /** Functions defined in dm-biza-gc.c **/
 int biza_ctr_gc(struct biza_target *bt);
@@ -434,6 +438,19 @@ void biza_update_pred(struct biza_target *bt, sector_t lcn);
 uint8_t biza_choose_open_zone_to_write(struct biza_target *bt, uint8_t drive_idx, uint32_t hint);
 
 
+int biza_do_gc_on_drive(struct biza_target *bt, uint8_t drive);
+
+int biza_do_gc(struct biza_target *bt);
+// Should do gc?
+static inline bool biza_should_gc(struct biza_target *bt) 
+{   
+    BUG_ON(bt->gc->nr_free_zones > bt->params->nr_zones_per_drive * bt->params->nr_drives);
+    BUG_ON(bt->gc->p_free_zones > 100);
+
+    // pr_err("total free zones: %u, free zones percent: %u%%, limit high: %u%%", bt->gc->nr_free_zones, bt->gc->p_free_zones, bt->gc_limit_high);
+
+    return bt->gc->p_free_zones < bt->gc_limit_high;
+}
 #endif
 
 
