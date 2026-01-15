@@ -613,8 +613,8 @@ static void biza_dtr(struct dm_target *ti)
         xa_erase(&bt->map->stripe_table, i);
     }
 	biza_dtr_map(bt);
-    biza_dtr_gc(bt);
     biza_free_devs(bt, bt->params->nr_drives);
+    biza_dtr_gc(bt);
     kfree(bt->devs);
     kfree(bt->params);
     kfree(bt);
@@ -1267,6 +1267,8 @@ static int biza_submit_stripe_head_write(struct biza_target *bt, struct bio *bio
     sector_t lcn, pcn;
     uint8_t *data_buffer, *bvec_start;
     int i, ret;
+    struct bvec_iter iter;
+    struct bio_vec bvec;
 
     BUG_ON(shioctx == NULL);
 
@@ -1296,8 +1298,8 @@ static int biza_submit_stripe_head_write(struct biza_target *bt, struct bio *bio
             data_buffer = biza_mempool_alloc(&bt->dcpool);
             // pr_err("alloc data buffer, drive_idx %u, zone_idx %u, offset %llu, lcn %llu\n", drive_idx, zone_idx, offset, lcn);
             if(!data_buffer) BUG_ON(1);
-            struct bvec_iter iter = bio->bi_iter;
-            struct bio_vec bvec = bio_iter_iovec(bio, iter);
+            iter = bio->bi_iter;
+            bvec = bio_iter_iovec(bio, iter);
             bvec_start = bvec_kmap_local(&bvec);
             memcpy(data_buffer, bvec_start, bt->params->chunk_size_byte);
             kunmap_local(bvec_start);
