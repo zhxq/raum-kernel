@@ -1,7 +1,7 @@
 CC := gcc-11
 
 # Name of the final module
-MOD_NAME := dm-biza
+MOD_NAME := dm-raum
 obj-m += $(MOD_NAME).o
 
 # List all the object files that make up your module

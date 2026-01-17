@@ -165,6 +165,17 @@ struct biza_dev {
 };
 
 
+// RAUM drives
+struct biza_raum_dev {
+    struct block_device *bdev;
+
+    sector_t capacity;              // capacity of the dev in number of sectors
+    sector_t len;                   // length (size) of the dev in number of sectors
+    uint32_t ns_id;    
+    struct rw_semaphore ozlock;
+};
+
+
 // type of chunk io
 typedef enum biza_chunk_io_type {
     BIZA_DATA_WRITE,
@@ -319,6 +330,7 @@ struct biza_target {
 
     // drivers in biza
     struct biza_dev *devs;
+    struct biza_raum_dev *raum_devs;
     
     // Queue for biza target
     struct radix_tree_root  io_rxtree;

@@ -284,6 +284,31 @@ err:
 }
 
 
+// Initialize RAUM drives
+static int biza_init_raum_devs(struct dm_target *ti)
+{   
+    struct biza_target *bt = ti->private;
+    struct biza_raum_dev *dev = NULL;
+    int i = 0;
+
+    for (i = 0; i < bt->params->nr_drives; ++i) {
+        dev = &bt->raum_devs[i];
+
+        dev->capacity = bdev_nr_sectors(dev->bdev);
+        dev->len = dev->capacity;
+
+        pr_err("RAUM Capacity: 0x%llx sectors (%llu bytes)\n", dev->capacity, dev->capacity * 512);
+
+		/** WARN: Stupid codes **/
+		/** WARN: In the future, should get ns_id with ioctl **/        
+        dev->ns_id = dev->bdev->bd_disk->disk_name[6] - '0';
+        init_rwsem(&dev->ozlock);
+    }
+
+    return 0;
+}
+
+
 static int biza_ctr_mempool(struct biza_mempool *pool, int min_nr, int order)
 {   
     int ret, i = 0, j = 0;
@@ -371,11 +396,12 @@ static void biza_mempool_free(struct biza_mempool *pool, uint8_t *element)
 static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {   
     struct biza_target *bt = NULL;
+    struct block_device *bdev = NULL;
     int ret = 0, i = 0;
 
     if (argc < NUM_DM_BIZA_PARAM + MIN_DEVS) {
 		ti->error = "Not enough arguments: <number of drives (k+m)> <fault tolerance (m)> <chunk size (KiB)> \
-                    [drives]";
+                    [ZNS drives] [RAUM drives]";
 		ret =  -EINVAL;
         goto err;
 	}
@@ -403,7 +429,7 @@ static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
         ret = -EINVAL;
         goto err_params;
     }
-    if(bt->params->nr_drives < argc - NUM_DM_BIZA_PARAM) {
+    if(bt->params->nr_drives < (argc - NUM_DM_BIZA_PARAM) / 2) {
         ti->error = "Insufficient number of [drives]";
         ret = -EINVAL;
         goto err_params;
@@ -443,13 +469,24 @@ static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 
     // Allocate memory for devs
+    pr_err("Allocating devs\n");
     bt->devs = kcalloc(bt->params->nr_drives, sizeof(struct biza_dev), GFP_KERNEL);
     if (!bt->devs) {
-        ti->error = "Failed to allocate biza devs";
+        ti->error = "Failed to allocate devs";
 		ret = -ENOMEM;
         goto err_params;
     }
 
+    pr_err("Allocating RAUM devs\n");
+    // Allocate memory for RAUM devs
+    bt->raum_devs = kcalloc(bt->params->nr_drives, sizeof(struct biza_raum_dev), GFP_KERNEL);
+    if (!bt->raum_devs) {
+        ti->error = "Failed to allocate RAUM devs";
+		ret = -ENOMEM;
+        goto err_params;
+    }
+
+    pr_err("Getting devs\n");
     // Get drives
     for (i = 0; i < bt->params->nr_drives; ++i) {
         if (dm_get_device(ti, argv[NUM_DM_BIZA_PARAM + i], dm_table_get_mode(ti->table), &bt->devs[i].dev)) {
@@ -459,12 +496,35 @@ static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
         }
     }
 
+    pr_err("Init devs\n");
     // Initialize drives
     ret = biza_init_devs(ti);
     if (ret) {
         ti->error = "Cannot init drives";
         goto err_dev;
     }
+
+
+    pr_err("Getting RAUM devs\n");
+    // Get RAUM drives
+    for (i = bt->params->nr_drives; i < 2 * bt->params->nr_drives; ++i) {
+        bdev = blkdev_get_by_path(argv[NUM_DM_BIZA_PARAM + i], FMODE_READ | FMODE_WRITE, NULL);
+        if (IS_ERR(bdev)) {
+            ti->error = "Failed to get RAUM drives";
+		    ret = -EINVAL;
+            goto err_raum_dev;
+        }
+        bt->raum_devs[i - bt->params->nr_drives].bdev = bdev;
+    }
+
+    pr_err("Init RAUM devs\n");
+    // Initialize RAUM drives
+    ret = biza_init_raum_devs(ti);
+    if (ret) {
+        ti->error = "Cannot init RAUM drives";
+        goto err_raum_dev;
+    }
+
 
 	/** WARN: All SSD should be the same **/
     bt->params->nr_zones_per_drive = bt->devs[0].nr_zones;
@@ -579,6 +639,8 @@ err_gc:
     biza_dtr_gc(bt);
 err_zones:
     biza_free_devs(bt, bt->params->nr_drives);
+err_raum_dev:
+    kfree(bt->raum_devs);
 err_dev:
     kfree(bt->devs);
 err_params:
@@ -1867,7 +1929,7 @@ static void biza_io_hints(struct dm_target *ti, struct queue_limits *limits)
 
 // Module
 static struct target_type biza_target = {
-    .name = "biza",
+    .name = "raum",
     .version = { 1, 0, 0 },
 	.module = THIS_MODULE,
     .ctr = biza_ctr,
@@ -1889,6 +1951,6 @@ static void __exit cleanup_biza(void)
 module_init(init_biza);
 module_exit(cleanup_biza);
 
-MODULE_DESCRIPTION("A software RAID engine which provides block interface for ZNS SSD array");
-MODULE_AUTHOR("Shushu Yi <shusyi@stu.pku.edu.cn>");
+MODULE_DESCRIPTION("RAUM: Random-write Allowed Unified Memory");
+MODULE_AUTHOR("Xiangqun Zhang <xzhang84@syr.edu>");
 MODULE_LICENSE("GPL");

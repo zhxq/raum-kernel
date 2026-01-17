@@ -316,13 +316,13 @@ void biza_map_remap(struct biza_target *bt, sector_t src_pcn, sector_t dst_pcn)
         // BUG_ON(stripe->parity_pcns[slot] != src_pcn);
 
         if (!stripe){
-            pr_err("!stripe lcn: 0x%llx, src pcn: 0x%llx, dst pcn: 0x%llx, stripe_no: 0x%llx, slot: 0x%llx\n", lcn, src_pcn, dst_pcn, stripe_no, slot);
+            pr_err("!stripe lcn: 0x%llx, src pcn: 0x%llx, dst pcn: 0x%llx, stripe_no: 0x%llx, slot: 0x%x\n", lcn, src_pcn, dst_pcn, stripe_no, slot);
             biza_pcn_to_idx(bt, src_pcn, &passed_drive_idx, &passed_zone_idx, &passed_offset);
             pr_err("read: src_pcn: 0x%llx, drive_idx: %u, zone_idx: %u, offset: 0x%llx; passed: src_pcn: 0x%llx, drive_idx: %u, zone_idx: %u, offset: 0x%llx\n", 
                BIZA_MAP_INVALID , read_drive_idx, read_zone_idx, read_offset, src_pcn, passed_drive_idx, passed_zone_idx, passed_offset);
         }else{
             if (stripe->parity_pcns[slot] != src_pcn){
-                pr_err("mismatch src_pcn -- lcn: 0x%llx, src pcn: 0x%llx, current slot pcn: 0x%llx, dst pcn: 0x%llx, stripe_no: 0x%llx, slot: 0x%llx\n", lcn, src_pcn, stripe->parity_pcns[slot], dst_pcn, stripe_no, slot);
+                pr_err("mismatch src_pcn -- lcn: 0x%llx, src pcn: 0x%llx, current slot pcn: 0x%llx, dst pcn: 0x%llx, stripe_no: 0x%llx, slot: 0x%x\n", lcn, src_pcn, stripe->parity_pcns[slot], dst_pcn, stripe_no, slot);
                 biza_pcn_to_idx(bt, stripe->parity_pcns[slot], &read_drive_idx, &read_zone_idx, &read_offset);
                 biza_pcn_to_idx(bt, src_pcn, &passed_drive_idx, &passed_zone_idx, &passed_offset);
                 pr_err("read: src_pcn: 0x%llx, drive_idx: %u, zone_idx: %u, offset: 0x%llx; passed: src_pcn: 0x%llx, drive_idx: %u, zone_idx: %u, offset: 0x%llx\n", 
@@ -336,7 +336,7 @@ void biza_map_remap(struct biza_target *bt, sector_t src_pcn, sector_t dst_pcn)
     else {  // data chunk
         // BUG_ON(bt->map->l2p[lcn].chunk_no != src_pcn);
         if (bt->map->l2p[lcn].chunk_no != src_pcn){
-            pr_err("mismatch src_pcn -- lcn: 0x%llx, src pcn: 0x%llx, current lcn -> pcn: 0x%llx, dst pcn: 0x%llx, stripe_no: 0x%llx, slot: 0x%llx\n", lcn, src_pcn, stripe->parity_pcns[slot], dst_pcn, stripe_no, slot);
+            pr_err("mismatch src_pcn -- lcn: 0x%llx, src pcn: 0x%llx, current lcn -> pcn: 0x%llx, dst pcn: 0x%llx, stripe_no: 0x%llx, slot: 0x%u\n", lcn, src_pcn, stripe->parity_pcns[slot], dst_pcn, stripe_no, slot);
             biza_pcn_to_idx(bt, bt->map->l2p[lcn].chunk_no, &read_drive_idx, &read_zone_idx, &read_offset);
             biza_pcn_to_idx(bt, src_pcn, &passed_drive_idx, &passed_zone_idx, &passed_offset);
             pr_err("read: src_pcn: 0x%llx, drive_idx: %u, zone_idx: %u, offset: 0x%llx; passed: src_pcn: 0x%llx, drive_idx: %u, zone_idx: %u, offset: 0x%llx\n", 

@@ -115,7 +115,7 @@ static void biza_gc_move_valid_data(struct biza_target *bt, uint8_t src_drive_id
     dst_dev = &bt->devs[dst_drive_idx];
     dst_zone = &dst_dev->zones[dst_zone_idx];
 
-    pr_err("GC source dev: %u, zone: %llu; dest dev: %u, zone: %llu\n", src_drive_idx, src_zone_idx, dst_drive_idx, dst_zone_idx);
+    pr_err("GC source dev: %u, zone: %u; dest dev: %u, zone: %u\n", src_drive_idx, src_zone_idx, dst_drive_idx, dst_zone_idx);
 
     BUG_ON(src_zone->cond != BLK_ZONE_COND_FULL);
     BUG_ON(dst_zone->cond == BLK_ZONE_COND_FULL);
@@ -206,8 +206,7 @@ static void biza_gc_work(struct work_struct *work)
 {
     struct biza_gc *gc = container_of(work, struct biza_gc, work.work);
     struct biza_target *bt = gc->bt;
-    int ret = 0, i;
-    struct biza_dev *dev;
+    int ret = 0;
 
     if(WRITE_AMP_STAT) {
         // pr_err("user_send %lld, data write %lld, parity write %lld, data in place update %lld, parity in place upate %lld\n",
