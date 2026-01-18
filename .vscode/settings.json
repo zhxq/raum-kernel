@@ -5,16 +5,17 @@
         "/lib/modules/5.15.0+/build/include/generated",
         "/lib/modules/5.15.0+/build/include/generated/autoconf.h",
         "/lib/modules/5.15.0+/build/include/generated/uapi",
-
         "/lib/modules/5.15.0+/build/arch/x86/include",
         "/lib/modules/5.15.0+/build/arch/x86/include/uapi",
         "/lib/modules/5.15.0+/build/arch/x86/include/generated",
         "/lib/modules/5.15.0+/build/arch/x86/include/asm-generic"
-        
     ],
     "C_Cpp.default.defines": [
         "__KERNEL__",
         "MODULE",
         "KBUILD_MODNAME=\"raum\""
     ],
+    "C_Cpp.formatting": "clangFormat",
+    "C_Cpp.clang_format_style": "file",
+    "editor.formatOnSave": true
 }
