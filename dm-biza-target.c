@@ -1043,41 +1043,35 @@ static inline bool biza_allocate_wp(struct biza_target *bt, uint8_t drive_idx,
 	// not in using & used
 	pcn = biza_idx_to_pcn(bt, drive_idx, zone_idx, wp_off);
 	lcn = biza_map_pcn_lookup_lcn(bt, pcn);
-	if (lcn != BIZA_MAP_UNMAPPED && lcn != BIZA_MAP_INVALID) {
-		zone->wp += bt->params->chunk_size_sector;
-		// pr_err("drive_idx %u, zone_idx %u, zone_wp add, now: %llu\n", drive_idx, zone_idx, zone->wp);
-		// atomic64_add(bt->params->chunk_size_sector, &zone->wp);
+	zone->wp += bt->params->chunk_size_sector;
+	// pr_err("drive_idx %u, zone_idx %u, zone_wp add, now: %llu\n", drive_idx, zone_idx, zone->wp);
+	// atomic64_add(bt->params->chunk_size_sector, &zone->wp);
 
-		if (zone->wp >=
-		    zone->start + zone->capacity) { // 这个zone使用完了
-			zone->cond = BLK_ZONE_COND_FULL;
-			// pr_err("drive_idx %u, zone_idx %u full\n", drive_idx, dev->open_zones[oz_idx]);
-			spin_unlock_irq(&zone->zlock);
+	if (zone->wp >= zone->start + zone->capacity) { // 这个zone使用完了
+		zone->cond = BLK_ZONE_COND_FULL;
+		// pr_err("drive_idx %u, zone_idx %u full\n", drive_idx, dev->open_zones[oz_idx]);
+		spin_unlock_irq(&zone->zlock);
 
-			up_read(&dev->ozlock);
-			down_write(&dev->ozlock);
-			ret = biza_finish_zone(bt, dev, zone_idx);
-			pr_err("finish zone %u\n", zone_idx);
-			dev->open_zones[oz_idx] = biza_open_empty_zone(
-				bt, dev, true,
-				biza_oz_idx_to_aware_type(bt, drive_idx,
-							  oz_idx));
-			pr_err("drive_idx %u, oz_idx %u open new zone %u\n",
-			       drive_idx, oz_idx, dev->open_zones[oz_idx]);
+		up_read(&dev->ozlock);
+		down_write(&dev->ozlock);
+		ret = biza_finish_zone(bt, dev, zone_idx);
+		pr_err("finish zone %u\n", zone_idx);
+		dev->open_zones[oz_idx] = biza_open_empty_zone(
+			bt, dev, true,
+			biza_oz_idx_to_aware_type(bt, drive_idx, oz_idx));
+		pr_err("drive_idx %u, oz_idx %u open new zone %u\n", drive_idx,
+		       oz_idx, dev->open_zones[oz_idx]);
 
-			if (dev->open_zones[oz_idx] == dev->nr_zones)
-				BUG_ON(1);
-			downgrade_write(&dev->ozlock);
+		if (dev->open_zones[oz_idx] == dev->nr_zones)
+			BUG_ON(1);
+		downgrade_write(&dev->ozlock);
 
-			zone_idx = dev->open_zones[oz_idx];
-			zone = &dev->zones[zone_idx];
-			spin_lock_irq(&zone->zlock);
-		}
-
-		return true;
+		zone_idx = dev->open_zones[oz_idx];
+		zone = &dev->zones[zone_idx];
+		spin_lock_irq(&zone->zlock);
 	}
 
-	return false;
+	return true;
 }
 
 // Find a empty zrwa enry for a active zone, return zrwa_size_chunk if none
