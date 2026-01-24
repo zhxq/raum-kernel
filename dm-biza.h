@@ -27,6 +27,7 @@
 #include <linux/nvme_ioctl.h>
 #include <linux/random.h>
 #include <linux/compat.h>
+#include <linux/min_heap.h>
 
 /** 0 means max **/
 #define NUM_SUBMIT_WORKER 2
@@ -73,6 +74,8 @@
 
 #define WRITE_AMP_STAT 1
 
+#define nvme_cmd_flush_raum 0x80
+
 // parameters
 struct biza_params {
 	uint8_t nr_drives;
@@ -96,8 +99,10 @@ struct biza_params {
 	uint8_t max_nr_trivial_open_zones;
 	uint8_t max_nr_gc_open_zones;
 
-	sector_t nr_chunks; // # of chunks for users
-	sector_t nr_internal_chunks;
+	sector_t nr_chunks; // number of chunks for users (logical chunks)
+	sector_t nr_internal_chunks; // number of chunks in all zones of all SSDs (physical chunks)
+	sector_t nr_total_raum_chunks; // number of chunks in all RAUM spaces
+	sector_t nr_raum_chunks_per_drive; // number of chunks in a drive
 };
 
 typedef enum biza_aware_type {
@@ -163,6 +168,37 @@ struct biza_dev {
 	uint64_t avg_lat_cnt;
 };
 
+// struct lru_heap_entry {
+// 	struct biza_raum_location_entry *content;
+// 	uint64_t access_time;
+// };
+
+// static bool my_less(const void *a, const void *b)
+// {
+// 	return ((const struct lru_heap_entry *)a)->access_time <
+// 	       ((const struct lru_heap_entry *)b)->access_time;
+// }
+
+// static void my_swap(void *a, void *b)
+// {
+// 	struct biza_raum_location_entry *temp_content =
+// 		((struct lru_heap_entry *)a)->content;
+// 	const uint64_t temp_access_time =
+// 		((struct lru_heap_entry *)a)->access_time;
+// 	((struct lru_heap_entry *)a)->content =
+// 		((struct lru_heap_entry *)a)->content;
+// 	((struct lru_heap_entry *)a)->access_time =
+// 		((struct lru_heap_entry *)a)->access_time;
+// 	((struct lru_heap_entry *)b)->content = temp_content;
+// 	((struct lru_heap_entry *)b)->access_time = temp_access_time;
+// }
+
+// static struct min_heap_callbacks lru_funcs = {
+// 	.elem_size = sizeof(struct lru_heap_entry),
+// 	.less = my_less,
+// 	.swp = my_swap,
+// };
+
 // RAUM drives
 struct biza_raum_dev {
 	struct block_device *bdev;
@@ -170,8 +206,17 @@ struct biza_raum_dev {
 	sector_t capacity; // capacity of the dev in number of sectors
 	sector_t capacity_in_chunks; // capacity in number of chunks
 	sector_t len; // length (size) of the dev in number of sectors
-	sector_t free_chunk_list; // If this chunk is free
-	sector_t chunk_usage_list; // Chunk type (0: In-place Data; 1: Partial parity)
+
+	struct list_head free_raum_chunks;
+	struct list_head lru_list;
+	atomic64_t lru_element_count;
+	spinlock_t free_raum_chunks_lock;
+	struct mutex lru_list_lock;
+	// sector_t chunk_usage_list; // Chunk type (0: In-place Data; 1: Partial parity)
+	uint8_t **chunk_content;
+	// struct lru_heap_entry *heap_buf;
+	// struct min_heap *heap;
+
 	uint32_t ns_id;
 	struct rw_semaphore ozlock;
 };
@@ -215,6 +260,11 @@ typedef struct biza_stripe_head {
 	struct list_head link; // enter point of partial stripe list
 } biza_stripe_head_t;
 
+typedef struct biza_free_raum_chunk {
+	sector_t chunk;
+	struct list_head link;
+} biza_free_raum_chunk_t;
+
 // stripe (for mapping)
 struct biza_stripe {
 	sector_t *parity_pcns; // for l2p map
@@ -228,6 +278,7 @@ typedef struct biza_addr {
 	sector_t chunk_no;
 	uint64_t stripe_no;
 	uint8_t slot;
+	bool in_raum;
 } biza_addr_t;
 
 // mapping tables for biza
@@ -307,6 +358,16 @@ struct biza_htable_entry {
 	struct hlist_node link;
 };
 
+struct biza_raum_location_entry {
+	struct list_head link;
+	sector_t lcn; // In RAID
+	sector_t raum_chunk; // In RAUM
+	sector_t stripe_no;
+	uint8_t slot;
+	uint8_t drive_idx;
+	bool parity;
+};
+
 // pre-allocate pages for data/parity
 struct biza_mempool {
 	uint8_t **elements;
@@ -342,6 +403,8 @@ struct biza_target {
 	struct xarray
 		fshc; // full stripe head cache (free sh when the parity is evict from zrwa)
 	struct xarray dc; // data cache (cache data in zrwa for in place update)
+	struct xarray raum_data; // data chunks in RAUM
+	struct xarray raum_parity; // parity chunks in RAUM
 	struct biza_mempool dcpool;
 	struct biza_mempool pcpool;
 
@@ -391,6 +454,8 @@ struct biza_chunkioctx {
 	sector_t lcn;
 	sector_t pcn;
 	uint8_t slot;
+	uint8_t drive_idx;
+	bool in_raum;
 
 	unsigned long stime; // I/O start time (in jiffies)
 };
@@ -424,6 +489,13 @@ void biza_gc_avoid_stat(struct biza_chunkioctx *chunkioctx);
 /** Functions defined in dm-biza-map.c **/
 int biza_ctr_map(struct biza_target *bt);
 void biza_dtr_map(struct biza_target *bt);
+inline sector_t biza_raum_idx_to_sector(struct biza_target *bt,
+					uint64_t offset);
+inline sector_t biza_raum_idx_to_pcn(struct biza_target *bt, uint8_t drive_idx,
+				     uint64_t offset);
+inline void biza_raum_pcn_to_idx(struct biza_target *bt, sector_t pcn,
+				 uint8_t *drive_idx, uint64_t *offset);
+inline bool biza_check_pcn_in_raum(struct biza_target *bt, sector_t pcn);
 inline sector_t biza_idx_to_sector(struct biza_target *bt, uint8_t drive_idx,
 				   uint32_t zone_idx, uint64_t offset);
 inline sector_t biza_idx_to_pcn(struct biza_target *bt, uint8_t drive_idx,
@@ -444,12 +516,15 @@ inline uint64_t biza_map_pcn_lookup_stripe_no(struct biza_target *bt,
 inline bool biza_map_is_data_in_pcn_useful(struct biza_target *bt,
 					   sector_t pcn);
 void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
-			      sector_t pcn, uint64_t no, uint8_t slot);
+			      sector_t pcn, uint64_t no, uint8_t slot,
+			      bool in_raum);
 void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
-				uint64_t no, uint8_t slot);
+				uint64_t no, uint8_t slot, bool in_raum);
 void biza_map_remap(struct biza_target *bt, sector_t src_pcn, sector_t dst_pcn);
 
 /** Functions defined in dm-biza-ds.c **/
+enum biza_aware_type biza_check_aware_type(struct biza_target *bt,
+					   uint32_t hint);
 int biza_ctr_pred(struct biza_target *bt);
 void biza_dtr_pred(struct biza_target *bt);
 void biza_update_pred(struct biza_target *bt, sector_t lcn);

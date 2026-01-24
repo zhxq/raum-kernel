@@ -50,6 +50,14 @@ static void biza_free_stripe(struct biza_stripe *stripe)
 /**
  * idx to sector (in drive)
  */
+inline sector_t biza_raum_idx_to_sector(struct biza_target *bt, uint64_t offset)
+{
+	return (offset << bt->params->chunk_size_sector_shift);
+}
+
+/**
+ * idx to sector (in drive)
+ */
 inline sector_t biza_idx_to_sector(struct biza_target *bt, uint8_t drive_idx,
 				   uint32_t zone_idx, uint64_t offset)
 {
@@ -57,6 +65,30 @@ inline sector_t biza_idx_to_sector(struct biza_target *bt, uint8_t drive_idx,
 
 	return (zone_idx * bt->devs[drive_idx].zones[0].len) +
 	       (offset << bt->params->chunk_size_sector_shift);
+}
+
+/**
+ * RAUM idx to pcn
+ */
+inline sector_t biza_raum_idx_to_pcn(struct biza_target *bt, uint8_t drive_idx,
+				     uint64_t offset)
+{
+	sector_t pcn = bt->params->nr_internal_chunks +
+		       drive_idx * bt->params->nr_raum_chunks_per_drive +
+		       offset;
+
+	if (drive_idx >= bt->params->nr_drives) {
+		BUG_ON(1);
+	}
+	if (pcn >=
+	    bt->params->nr_internal_chunks + bt->params->nr_total_raum_chunks) {
+		BUG_ON(1);
+	}
+	if (offset >= bt->params->nr_raum_chunks_per_drive) {
+		BUG_ON(1);
+	}
+
+	return pcn;
 }
 
 /**
@@ -81,6 +113,28 @@ inline sector_t biza_idx_to_pcn(struct biza_target *bt, uint8_t drive_idx,
 }
 
 /**
+ * RAUM pcn to idx
+ */
+inline void biza_raum_pcn_to_idx(struct biza_target *bt, sector_t pcn,
+				 uint8_t *drive_idx, uint64_t *offset)
+{
+	pcn -= bt->params->nr_internal_chunks;
+	*offset = pcn % bt->params->nr_raum_chunks_per_drive;
+	*drive_idx = (pcn - *offset) / bt->params->nr_raum_chunks_per_drive;
+
+	if (*drive_idx >= bt->params->nr_drives) {
+		BUG_ON(1);
+	}
+	if (pcn >=
+	    bt->params->nr_internal_chunks + bt->params->nr_total_raum_chunks) {
+		BUG_ON(1);
+	}
+	if (*offset >= bt->params->nr_raum_chunks_per_drive) {
+		BUG_ON(1);
+	}
+}
+
+/**
  * pcn to idx
  */
 inline void biza_pcn_to_idx(struct biza_target *bt, sector_t pcn,
@@ -95,12 +149,19 @@ inline void biza_pcn_to_idx(struct biza_target *bt, sector_t pcn,
 	*offset = pcn % bt->params->zone_capacity_chunk;
 
 	if (*drive_idx >= bt->params->nr_drives) {
+		pr_err("drive_idx: %u, zone_idx: %u, offset: 0x%llx\n",
+		       *drive_idx, *zone_idx, *offset);
 		BUG_ON(1);
 	}
 	BUG_ON(*zone_idx >= bt->params->nr_zones_per_drive);
 	if (*offset >= bt->params->zone_capacity_chunk) {
 		BUG_ON(1);
 	}
+}
+
+inline bool biza_check_pcn_in_raum(struct biza_target *bt, sector_t pcn)
+{
+	return pcn >= bt->params->nr_internal_chunks;
 }
 
 // Lookup physical chunk number of chunk from lcn
@@ -212,7 +273,8 @@ inline bool biza_map_is_data_in_pcn_useful(struct biza_target *bt, sector_t pcn)
 
 // update mapping tables because of data write/out-of-place update
 void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
-			      sector_t pcn, uint64_t no, uint8_t slot)
+			      sector_t pcn, uint64_t no, uint8_t slot,
+			      bool in_raum)
 {
 	sector_t org_pcn = BIZA_MAP_UNMAPPED;
 	uint64_t org_stripe_no = BIZA_MAP_UNMAPPED;
@@ -222,7 +284,14 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 	uint32_t org_zone_idx;
 	uint64_t org_offset;
 	sector_t org_parity_pcn = BIZA_MAP_UNMAPPED;
+	biza_free_raum_chunk_t *free_chunk;
+	struct biza_raum_location_entry *org_raum_stripe_data;
+	struct biza_raum_dev *dev;
+	// unsigned long flags;
 	int i;
+
+	pr_err("Data update lcn: 0x%llx, pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
+	       lcn, pcn, no, slot, in_raum);
 
 	org_pcn = bt->map->l2p[lcn].chunk_no;
 	org_stripe_no = bt->map->l2p[lcn].stripe_no;
@@ -231,9 +300,11 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 	bt->map->l2p[lcn].chunk_no = pcn;
 	bt->map->l2p[lcn].stripe_no = no;
 	bt->map->l2p[lcn].slot = slot;
+	bt->map->l2p[lcn].in_raum = in_raum;
 	bt->map->p2l[pcn].chunk_no = lcn;
 	bt->map->p2l[pcn].stripe_no = no;
 	bt->map->p2l[pcn].slot = slot;
+	bt->map->p2l[pcn].in_raum = in_raum;
 
 	stripe = xa_load(&bt->map->stripe_table, no);
 	if (!stripe) {
@@ -250,9 +321,13 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 		// DO NOT set stripe_no now, because when gc, we need recompute parity
 		// bt->map->p2l[org_pcn].stripe_no = BIZA_MAP_INVALID;
 		bt->map->p2l[org_pcn].slot = (uint8_t)BIZA_MAP_INVALID;
-		biza_pcn_to_idx(bt, org_pcn, &org_drive_idx, &org_zone_idx,
-				&org_offset);
-		bt->devs[org_drive_idx].zones[org_zone_idx].nr_invalid_chunks++;
+		if (!bt->map->p2l[org_pcn].in_raum) {
+			biza_pcn_to_idx(bt, org_pcn, &org_drive_idx,
+					&org_zone_idx, &org_offset);
+			bt->devs[org_drive_idx]
+				.zones[org_zone_idx]
+				.nr_invalid_chunks++;
+		}
 
 		org_stripe = xa_load(&bt->map->stripe_table, org_stripe_no);
 		BUG_ON(!org_stripe);
@@ -274,16 +349,54 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 						BIZA_MAP_INVALID;
 					bt->map->p2l[org_parity_pcn].slot =
 						(uint8_t)BIZA_MAP_INVALID;
-					biza_pcn_to_idx(bt, org_parity_pcn,
-							&org_drive_idx,
-							&org_zone_idx,
-							&org_offset);
-					bt->devs[org_drive_idx]
-						.zones[org_zone_idx]
-						.nr_invalid_chunks++;
+					if (!bt->map->p2l[org_pcn].in_raum) {
+						biza_pcn_to_idx(bt,
+								org_parity_pcn,
+								&org_drive_idx,
+								&org_zone_idx,
+								&org_offset);
+						bt->devs[org_drive_idx]
+							.zones[org_zone_idx]
+							.nr_invalid_chunks++;
+					}
 				}
 
 				// pr_err("freeing stripe: 0x%llx\n", org_stripe_no);
+				dev = &bt->raum_devs[org_drive_idx];
+
+				org_raum_stripe_data = xa_load(&bt->raum_parity,
+							       org_stripe_no);
+				if (org_raum_stripe_data) {
+					free_chunk = kzalloc(
+						sizeof(biza_free_raum_chunk_t),
+						GFP_ATOMIC);
+					free_chunk->chunk =
+						org_raum_stripe_data->raum_chunk;
+					// pr_err("Locking drive_idx %u, raum_chunk 0x%llx\n",
+					//        org_drive_idx,
+					//        org_raum_stripe_data->raum_chunk);
+					mutex_lock(&dev->lru_list_lock);
+					// pr_err("Locked drive_idx %u, raum_chunk 0x%llx\n",
+					//        org_drive_idx,
+					//        org_raum_stripe_data->raum_chunk);
+
+					list_add_tail(&free_chunk->link,
+						      &dev->free_raum_chunks);
+					list_del(&org_raum_stripe_data->link);
+					atomic64_add_negative(
+						-1, &dev->lru_element_count);
+					// pr_err("Unlocking drive_idx %u, raum_chunk 0x%llx\n",
+					//        org_drive_idx,
+					//        org_raum_stripe_data->raum_chunk);
+					mutex_unlock(&dev->lru_list_lock);
+
+					xa_erase(&bt->raum_parity,
+						 org_stripe_no);
+					// pr_err("Unlocked drive_idx %u, raum_chunk 0x%llx\n",
+					//        org_drive_idx,
+					//        org_raum_stripe_data->raum_chunk);
+					kfree(org_raum_stripe_data);
+				}
 				xa_erase(&bt->map->stripe_table, org_stripe_no);
 				biza_free_stripe(org_stripe);
 			}
@@ -293,11 +406,13 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 
 // update mapping tables because of parity write/ out-of-place update
 void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
-				uint64_t no, uint8_t slot)
+				uint64_t no, uint8_t slot, bool in_raum)
 {
 	struct biza_stripe *stripe = NULL;
 	sector_t old_pcn;
 
+	pr_err("Parity update pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
+	       pcn, no, slot, in_raum);
 	stripe = xa_load(&bt->map->stripe_table, no);
 	if (!stripe) {
 		BUG_ON(slot);
@@ -320,6 +435,7 @@ void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
 	bt->map->p2l[pcn].chunk_no = BIZA_MAP_PARITY;
 	bt->map->p2l[pcn].stripe_no = no;
 	bt->map->p2l[pcn].slot = slot;
+	bt->map->p2l[pcn].in_raum = in_raum;
 
 	stripe->parity_pcns[slot] = pcn;
 }
@@ -430,7 +546,8 @@ int biza_ctr_map(struct biza_target *bt)
 	memset(bt->map->l2p, (uint8_t)BIZA_MAP_UNMAPPED,
 	       bt->params->nr_chunks * sizeof(biza_addr_t));
 
-	bt->map->p2l = kvmalloc_array(bt->params->nr_internal_chunks,
+	bt->map->p2l = kvmalloc_array(bt->params->nr_internal_chunks +
+					      bt->params->nr_total_raum_chunks,
 				      sizeof(biza_addr_t), GFP_KERNEL);
 	if (!bt->map->p2l) {
 		pr_err("dm-biza: Failed to allocate p2l map\n");
@@ -438,7 +555,9 @@ int biza_ctr_map(struct biza_target *bt)
 		goto err_l2p;
 	}
 	memset(bt->map->p2l, (uint8_t)BIZA_MAP_UNMAPPED,
-	       bt->params->nr_internal_chunks * sizeof(biza_addr_t));
+	       (bt->params->nr_internal_chunks +
+		bt->params->nr_total_raum_chunks) *
+		       sizeof(biza_addr_t));
 
 	xa_init(&bt->map->stripe_table);
 

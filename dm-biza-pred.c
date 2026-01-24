@@ -506,6 +506,19 @@ void biza_update_pred(struct biza_target *bt, sector_t lcn)
 	mutex_unlock(&bt->pred_lock);
 }
 
+enum biza_aware_type biza_check_aware_type(struct biza_target *bt,
+					   uint32_t hint)
+{
+	struct biza_htable_entry *tb_etr = NULL;
+	struct biza_pred_entry *pred_etr = NULL;
+	mutex_lock(&bt->pred_lock);
+	tb_etr = biza_htable_find(bt, hint);
+	pred_etr = tb_etr->pred_entry;
+	mutex_unlock(&bt->pred_lock);
+
+	return pred_etr->aware_type;
+}
+
 /**
  * Choose a open zone, return its open zone idx (instead of zone idx)
  */
