@@ -59,12 +59,35 @@ inline sector_t biza_raum_idx_to_sector(struct biza_target *bt, uint64_t offset)
  * idx to sector (in drive)
  */
 inline sector_t biza_idx_to_sector(struct biza_target *bt, uint8_t drive_idx,
-				   uint32_t zone_idx, uint64_t offset)
+				   uint32_t zone_idx, uint64_t offset,
+				   bool ignore_offset)
 {
 	BUG_ON(zone_idx > bt->params->nr_zones_per_drive);
 
+	// ZONE APPEND ONLY ACCEPTS ZONE START ADDR!
+	if (ignore_offset) {
+		offset = 0;
+	} // But we still need a real offset when reading
+
 	return (zone_idx * bt->devs[drive_idx].zones[0].len) +
 	       (offset << bt->params->chunk_size_sector_shift);
+}
+
+inline sector_t biza_sector_to_pcn(struct biza_target *bt, uint8_t drive_idx,
+				   sector_t sector)
+{
+	u64 zone_len = bt->devs[drive_idx].zones[0].len;
+	u64 rem;
+	u32 zone_idx;
+	u64 chunk_off;
+
+	zone_idx = div64_u64_rem(sector, zone_len, &rem);
+
+	BUG_ON(zone_idx >= bt->params->nr_zones_per_drive);
+
+	chunk_off = rem >> bt->params->chunk_size_sector_shift;
+
+	return biza_idx_to_pcn(bt, drive_idx, zone_idx, chunk_off);
 }
 
 /**
@@ -383,8 +406,8 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 					list_add_tail(&free_chunk->link,
 						      &dev->free_raum_chunks);
 					list_del(&org_raum_stripe_data->link);
-					atomic64_add_negative(
-						-1, &dev->lru_element_count);
+					atomic64_dec(&dev->lru_element_count);
+
 					// pr_err("Unlocking drive_idx %u, raum_chunk 0x%llx\n",
 					//        org_drive_idx,
 					//        org_raum_stripe_data->raum_chunk);

@@ -487,6 +487,8 @@ uint8_t biza_get_oz_idx_gc_avoid(struct biza_target *bt, struct biza_dev *dev,
 void biza_gc_avoid_stat(struct biza_chunkioctx *chunkioctx);
 
 /** Functions defined in dm-biza-map.c **/
+inline sector_t biza_sector_to_pcn(struct biza_target *bt, uint8_t drive_idx,
+				   sector_t sector);
 int biza_ctr_map(struct biza_target *bt);
 void biza_dtr_map(struct biza_target *bt);
 inline sector_t biza_raum_idx_to_sector(struct biza_target *bt,
@@ -497,7 +499,8 @@ inline void biza_raum_pcn_to_idx(struct biza_target *bt, sector_t pcn,
 				 uint8_t *drive_idx, uint64_t *offset);
 inline bool biza_check_pcn_in_raum(struct biza_target *bt, sector_t pcn);
 inline sector_t biza_idx_to_sector(struct biza_target *bt, uint8_t drive_idx,
-				   uint32_t zone_idx, uint64_t offset);
+				   uint32_t zone_idx, uint64_t offset,
+				   bool ignore_offset);
 inline sector_t biza_idx_to_pcn(struct biza_target *bt, uint8_t drive_idx,
 				uint32_t zone_idx, uint64_t offset);
 inline void biza_pcn_to_idx(struct biza_target *bt, sector_t pcn,
