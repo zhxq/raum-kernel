@@ -548,4 +548,15 @@ static inline bool biza_should_gc(struct biza_target *bt)
 
 	return bt->gc->p_free_zones < bt->gc_limit_high;
 }
+
+static bool biza_is_valid_pcn(struct biza_target *bt, sector_t pcn)
+{
+	if (pcn >=
+	    bt->params->nr_internal_chunks + bt->params->nr_total_raum_chunks) {
+		pr_err("invalid pcn 0x%llx\n", pcn);
+		return false;
+	}
+
+	return true;
+}
 #endif

@@ -107,6 +107,9 @@ inline sector_t biza_raum_idx_to_pcn(struct biza_target *bt, uint8_t drive_idx,
 	    bt->params->nr_internal_chunks + bt->params->nr_total_raum_chunks) {
 		BUG_ON(1);
 	}
+	if (pcn < bt->params->nr_internal_chunks) {
+		BUG_ON(1);
+	}
 	if (offset >= bt->params->nr_raum_chunks_per_drive) {
 		BUG_ON(1);
 	}
@@ -141,15 +144,17 @@ inline sector_t biza_idx_to_pcn(struct biza_target *bt, uint8_t drive_idx,
 inline void biza_raum_pcn_to_idx(struct biza_target *bt, sector_t pcn,
 				 uint8_t *drive_idx, uint64_t *offset)
 {
+	if (pcn < bt->params->nr_internal_chunks ||
+	    pcn >= bt->params->nr_internal_chunks +
+			    bt->params->nr_total_raum_chunks) {
+		pr_err("illegal raum pcn: 0x%llx\n", pcn);
+		BUG_ON(1);
+	}
 	pcn -= bt->params->nr_internal_chunks;
 	*offset = pcn % bt->params->nr_raum_chunks_per_drive;
 	*drive_idx = (pcn - *offset) / bt->params->nr_raum_chunks_per_drive;
 
 	if (*drive_idx >= bt->params->nr_drives) {
-		BUG_ON(1);
-	}
-	if (pcn >=
-	    bt->params->nr_internal_chunks + bt->params->nr_total_raum_chunks) {
 		BUG_ON(1);
 	}
 	if (*offset >= bt->params->nr_raum_chunks_per_drive) {
@@ -184,7 +189,9 @@ inline void biza_pcn_to_idx(struct biza_target *bt, sector_t pcn,
 
 inline bool biza_check_pcn_in_raum(struct biza_target *bt, sector_t pcn)
 {
-	return pcn >= bt->params->nr_internal_chunks;
+	return pcn >= bt->params->nr_internal_chunks &&
+	       pcn < bt->params->nr_internal_chunks +
+			       bt->params->nr_total_raum_chunks;
 }
 
 // Lookup physical chunk number of chunk from lcn
@@ -345,6 +352,9 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 		// bt->map->p2l[org_pcn].stripe_no = BIZA_MAP_INVALID;
 		bt->map->p2l[org_pcn].slot = (uint8_t)BIZA_MAP_INVALID;
 		if (!bt->map->p2l[org_pcn].in_raum) {
+			// pr_err("Testing in_raum 1 0x%llx\n", org_pcn);
+			// pr_err("Inif Data update lcn: 0x%llx, pcn: 0x%llx, original_pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
+			//        lcn, org_pcn, pcn, no, slot, in_raum);
 			biza_pcn_to_idx(bt, org_pcn, &org_drive_idx,
 					&org_zone_idx, &org_offset);
 			bt->devs[org_drive_idx]
@@ -362,17 +372,21 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 				for (i = 0; i < bt->params->m; ++i) {
 					org_parity_pcn =
 						org_stripe->parity_pcns[i];
-					if (org_parity_pcn >=
-					    bt->params->nr_internal_chunks)
+					if (!biza_is_valid_pcn(
+						    bt, org_parity_pcn)) {
 						continue;
-
+					}
 					bt->map->p2l[org_parity_pcn].chunk_no =
 						BIZA_MAP_INVALID;
 					bt->map->p2l[org_parity_pcn].stripe_no =
 						BIZA_MAP_INVALID;
 					bt->map->p2l[org_parity_pcn].slot =
 						(uint8_t)BIZA_MAP_INVALID;
-					if (!bt->map->p2l[org_pcn].in_raum) {
+					if (!bt->map->p2l[org_parity_pcn]
+						     .in_raum) {
+						// pr_err("Inloop Data update lcn: 0x%llx, pcn: 0x%llx, original_pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
+						//        lcn, org_pcn, pcn, no,
+						//        slot, in_raum);
 						biza_pcn_to_idx(bt,
 								org_parity_pcn,
 								&org_drive_idx,
@@ -389,6 +403,9 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 
 				org_raum_stripe_data = xa_load(&bt->raum_parity,
 							       org_stripe_no);
+				// org_raum_stripe_data =
+				// 	biza_raum_lru_htable_find(
+				// 		bt, org_stripe_no, true);
 				if (org_raum_stripe_data) {
 					free_chunk = kzalloc(
 						sizeof(biza_free_raum_chunk_t),
