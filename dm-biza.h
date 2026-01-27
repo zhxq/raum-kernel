@@ -78,14 +78,18 @@
 
 #define nvme_cmd_flush_raum 0x80
 
+static int print_flag = 0;
 #ifdef BIZA_LOG_DEBUG
 #define log(fmt, ...)                       \
 	do {                                \
 		pr_err(fmt, ##__VA_ARGS__); \
 	} while (0)
 #else
-#define log(fmt, ...) \
-	do {          \
+
+#define log(fmt, ...)                               \
+	do {                                        \
+		if (print_flag)                     \
+			pr_err(fmt, ##__VA_ARGS__); \
 	} while (0)
 #endif
 // parameters
@@ -224,7 +228,6 @@ struct biza_raum_dev {
 
 	struct list_head free_raum_chunks;
 	struct list_head lru_list;
-	atomic64_t lru_element_count;
 	spinlock_t free_raum_chunks_lock;
 	spinlock_t lru_list_lock;
 	// sector_t chunk_usage_list; // Chunk type (0: In-place Data; 1: Partial parity)

@@ -85,6 +85,7 @@ sector_t biza_flush_raum_area(struct biza_target *bt, uint8_t drive_idx,
 		result = le64_to_cpu(nrq->result.u64);
 	}
 	blk_mq_free_request(req);
+	atomic64_inc(&bt->devs[drive_idx].zones[zone_idx].finished_ios);
 
 	return (sector_t)result;
 }
@@ -172,32 +173,43 @@ uint32_t biza_open_empty_zone(struct biza_target *bt, struct biza_dev *dev,
 			      bool zrwa, biza_aware_type type)
 {
 	struct gendisk *disk = dev->dev->bdev->bd_disk;
-	struct nvme_passthru_cmd cmd = {};
+	struct request_queue *q = disk->queue;
+	struct request *req;
+	struct biza_nvme_request *nrq;
+	// struct nvme_passthru_cmd cmd = {};
+	struct nvme_command *cmd;
 	uint32_t i;
 	int err;
 
 	for (i = 0; i < dev->nr_zones; ++i) {
 		if (dev->zones[i].cond == BLK_ZONE_COND_EMPTY) {
-			cmd.opcode = nvme_cmd_zone_mgmt_send;
-			cmd.cdw10 = (dev->zones[i].start) & 0xffffffff;
-			cmd.cdw11 = (dev->zones[i].start) >> 32;
-			// Setting ZRWA=false will fail at ioctl layer
-			// Not sure why, though
-			cmd.cdw13 = (0x3 & 0xff) |
-				    ((zrwa ? 0x1 : 0x0)
-				     << 9); // refer to NVMe specification
-			cmd.nsid = dev->ns_id;
+			req = blk_mq_alloc_request(q, REQ_OP_DRV_IN, 0);
+			if (IS_ERR(req)) {
+				BUG_ON(1);
+				return (sector_t)PTR_ERR(req);
+			}
+
+			req->rq_flags |= RQF_DONTPREP;
+			nrq = blk_mq_rq_to_pdu(req);
+			cmd = nrq->cmd;
+			memset(cmd, 0, sizeof(*cmd));
+
+			cmd->common.opcode =
+				nvme_cmd_zone_mgmt_send; // nvme_cmd_zone_mgmt_send (check your headers)
+			cmd->common.nsid = cpu_to_le32(dev->ns_id);
+			cmd->common.cdw10 = (dev->zones[i].start) & 0xffffffff;
+			cmd->common.cdw11 = (dev->zones[i].start) >> 32;
+			cmd->common.cdw13 = (0x3 & 0xff);
+
 			pr_err("dm-biza: GC: %s, opening dev: %s, zone %d, start: 0x%llx",
 			       type == BIZA_GC ? "Yes" : "No", disk->disk_name,
 			       i, dev->zones[i].start);
 
 			// i.e., nvme_ioctl
-			err = disk->fops->ioctl(dev->dev->bdev, 0,
-						NVME_IOCTL_IO_CMD,
-						(unsigned long)&cmd);
+			err = blk_execute_rq(disk, req, 0);
 			if (err) {
-				pr_err("dm-biza: open zone error: dev: %s, zone_idx %d\n",
-				       disk->disk_name, i);
+				pr_err("dm-biza: open zone error: dev: %s, zone_idx %d, err %d\n",
+				       disk->disk_name, i, err);
 				return dev->nr_zones;
 			}
 
@@ -238,7 +250,9 @@ int biza_finish_zone(struct biza_target *bt, struct biza_dev *dev,
 		     uint32_t zone_idx)
 {
 	int ret;
-
+	struct gendisk *disk = dev->dev->bdev->bd_disk;
+	pr_err("dm-biza: finishing dev: %s, zone %d, start: 0x%llx",
+	       disk->disk_name, zone_idx, dev->zones[zone_idx].start);
 	dev->zones[zone_idx].wp =
 		dev->zones[zone_idx].start + dev->zones[zone_idx].capacity;
 	atomic64_set(&dev->zones[zone_idx].in_flight_ios, 0);
@@ -542,8 +556,6 @@ static int biza_init_raum_devs(struct dm_target *ti)
 		}
 		spin_unlock_irq(&dev->lru_list_lock);
 
-		atomic64_set(&dev->lru_element_count, 0);
-
 		// dev->heap_buf = kzalloc(sizeof(struct min_heap) *
 		// 				dev->capacity_in_chunks,
 		// 			GFP_KERNEL);
@@ -843,6 +855,7 @@ static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto err_map;
 	}
 	mutex_init(&bt->io_lock);
+	// spin_lock_init(&bt->io_lock);
 	INIT_RADIX_TREE(&bt->io_rxtree, GFP_NOIO);
 
 	// Initialize stripe number counter
@@ -887,6 +900,7 @@ static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	// Initialize pred context (i.e., zone group selector related data structures)
 	mutex_init(&bt->pred_lock);
+	// spin_lock_init(&bt->pred_lock);
 	ret = biza_ctr_pred(bt);
 	if (ret) {
 		ti->error = "Failed to init pred context";
@@ -922,14 +936,14 @@ static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 err_lru:
 	biza_dtr_pred(bt);
 err_gr:
-	mutex_destroy(&bt->pred_lock);
+	// mutex_destroy(&bt->pred_lock);
 	biza_dtr_mempool(&bt->pcpool);
 err_dc:
 	biza_dtr_mempool(&bt->dcpool);
 	xa_destroy(&bt->dc);
 err_fshc:
 	xa_destroy(&bt->fshc);
-	mutex_destroy(&bt->io_lock);
+	// mutex_destroy(&bt->io_lock);
 	destroy_workqueue(bt->iowq);
 err_map:
 	biza_dtr_map(bt);
@@ -958,12 +972,12 @@ static void biza_dtr(struct dm_target *ti)
 	int i;
 
 	biza_dtr_pred(bt);
-	mutex_destroy(&bt->pred_lock);
+	// mutex_destroy(&bt->pred_lock);
 	biza_dtr_mempool(&bt->pcpool);
 	biza_dtr_mempool(&bt->dcpool);
 	xa_destroy(&bt->dc);
 	xa_destroy(&bt->fshc);
-	mutex_destroy(&bt->io_lock);
+	// mutex_destroy(&bt->io_lock);
 	flush_workqueue(bt->iowq);
 	destroy_workqueue(bt->iowq);
 	for (i = 0; i < atomic64_read(&bt->strip_no_cnt); ++i) {
@@ -1193,8 +1207,8 @@ static inline bool biza_allocate_wp(struct biza_target *bt, uint8_t drive_idx,
 		while (atomic64_read(&zone->in_flight_ios) !=
 		       atomic64_read(&zone->finished_ios)) {
 			pr_err("Waiting for in flight io (%llu/%llu finished)\n",
-			       atomic64_read(&zone->in_flight_ios),
-			       atomic64_read(&zone->finished_ios));
+			       atomic64_read(&zone->finished_ios),
+			       atomic64_read(&zone->in_flight_ios));
 			cpu_relax();
 		}
 		ret = biza_finish_zone(bt, dev, zone_idx);
@@ -1385,8 +1399,8 @@ static inline void biza_get_raum_write_location(struct biza_target *bt,
 	uint64_t raid_offset;
 	uint32_t zone_idx;
 	sector_t wp;
-	sector_t pcn, old_lcn, old_pcn;
-	biza_free_raum_chunk_t *free_chunk;
+	sector_t pcn, old_lcn, old_pcn, chunk;
+	biza_free_raum_chunk_t *free_chunk = NULL;
 	struct biza_stripe *stripe = NULL;
 	biza_stripe_head_t *sh;
 	uint8_t *data_buffer;
@@ -1398,28 +1412,30 @@ static inline void biza_get_raum_write_location(struct biza_target *bt,
 	// If in RAUM, then just return the original location
 
 	// Try get a location in that drive's RAUM area
-	if (atomic64_read(&dev->lru_element_count) == dev->capacity_in_chunks) {
+
+	spin_lock_irqsave(&dev->lru_list_lock, flags);
+	free_chunk = list_first_entry_or_null(&dev->free_raum_chunks,
+					      biza_free_raum_chunk_t, link);
+	if (!free_chunk) {
 		// If full, evict an entry
-
-		free_chunk =
-			kzalloc(sizeof(biza_free_raum_chunk_t), GFP_ATOMIC);
-
-		spin_lock_irqsave(&dev->lru_list_lock, flags);
+		// print_flag = 1;
+		// dump_stack();
 		oldest = list_first_entry(
 			&dev->lru_list, struct biza_raum_location_entry, link);
-		free_chunk->chunk = oldest->raum_chunk;
+		chunk = oldest->raum_chunk;
 		// spin_lock(&dev->lru_list_lock);
 		list_del(&oldest->link);
-		list_add_tail(&free_chunk->link, &dev->free_raum_chunks);
+		// list_add_tail(&free_chunk->link, &dev->free_raum_chunks);
 		// spin_unlock(&dev->lru_list_lock);
 		spin_unlock_irqrestore(&dev->lru_list_lock, flags);
-		// pr_err("loc: lcn 0x%llx, drive_idx: %u\n", oldest->lcn,
-		//        drive_idx);
 		biza_get_write_location(bt, oldest->lcn, drive_idx, &zone_idx,
 					&raid_offset);
 
 		wp = biza_idx_to_sector(bt, drive_idx, zone_idx, raid_offset,
 					true);
+		// pr_err("Flushing loc: lcn 0x%llx, drive_idx: %u, target pcn: 0x%llx\n",
+		//        oldest->lcn, drive_idx, wp);
+		WARN_ONCE(1, "Start evict\n");
 		pcn = biza_idx_to_pcn(bt, drive_idx, zone_idx, raid_offset);
 		wp = biza_flush_raum_area(bt, drive_idx, zone_idx, wp, pcn,
 					  bt->params->chunk_size_sector,
@@ -1427,17 +1443,17 @@ static inline void biza_get_raum_write_location(struct biza_target *bt,
 
 		pcn = wp >> bt->params->chunk_size_sector_shift;
 
-		pr_err("%s LRU Evicted to pcn 0x%llx, wp 0x%llx, oldest 0x%px\n",
-		       oldest->parity ? "parity" : "data", pcn, wp, oldest);
+		// pr_err("%s LRU Evicted to pcn 0x%llx, wp 0x%llx, oldest 0x%px\n",
+		//        oldest->parity ? "parity" : "data", pcn, wp, oldest);
 		stripe = xa_load(&bt->map->stripe_table, oldest->stripe_no);
 		if (oldest->parity) {
 			// Update mapping table for parity chunks
-			pr_err("pcn 0x%llx stripe 0x%px 0x%llx slot 0x%x parity_pcns 0x%px\n",
-			       pcn, stripe, oldest->stripe_no, oldest->slot,
-			       stripe->parity_pcns);
+			// pr_err("pcn 0x%llx stripe 0x%px 0x%llx slot 0x%x parity_pcns 0x%px\n",
+			//        pcn, stripe, oldest->stripe_no, oldest->slot,
+			//        stripe->parity_pcns);
 			old_pcn = stripe->parity_pcns[oldest->slot];
-			pr_err("old_pcn 0x%llx stripe 0x%px\n", old_pcn,
-			       stripe);
+			// pr_err("old_pcn 0x%llx stripe 0x%px\n", old_pcn,
+			//        stripe);
 			bt->map->p2l[pcn].chunk_no = BIZA_MAP_PARITY;
 			bt->map->p2l[pcn].stripe_no = oldest->stripe_no;
 			bt->map->p2l[pcn].slot = oldest->slot;
@@ -1450,10 +1466,12 @@ static inline void biza_get_raum_write_location(struct biza_target *bt,
 					BIZA_MAP_INVALID;
 				bt->map->p2l[old_pcn].slot =
 					(uint8_t)BIZA_MAP_INVALID;
+				bt->map->p2l[old_pcn].in_raum = false;
 			}
+			stripe->parity_pcns[oldest->slot] = pcn;
 
 			sh = xa_load(&bt->fshc, oldest->stripe_no);
-			pr_err("pcn 0x%llx sh 0x%px\n", pcn, sh);
+			// pr_err("pcn 0x%llx sh 0x%px\n", pcn, sh);
 			if (sh) {
 				// pr_err("!!Free parity buffer, pcn=0x%llx, sh->parity_cache=0x%px\n", pcn, sh->parity_cache);
 				xa_erase(&bt->fshc, stripe_no);
@@ -1475,10 +1493,11 @@ static inline void biza_get_raum_write_location(struct biza_target *bt,
 			bt->map->p2l[old_pcn].chunk_no = BIZA_MAP_INVALID;
 			bt->map->p2l[old_pcn].stripe_no = BIZA_MAP_INVALID;
 			bt->map->p2l[old_pcn].slot = (uint8_t)BIZA_MAP_INVALID;
-			pr_err("%s LRU Evicted to pcn 0x%llx, old_lcn 0x%llx, old_pcn 0x%llx, biza_entry old_lcn 0x%llx, biza_entry old_pcn 0x%llx, wp 0x%llx, oldest 0x%px\n",
-			       oldest->parity ? "parity" : "data", pcn, old_lcn,
-			       old_pcn, oldest->lcn, oldest->raum_chunk, wp,
-			       oldest);
+			bt->map->p2l[old_pcn].in_raum = false;
+			// pr_err("%s LRU Evicted to pcn 0x%llx, old_lcn 0x%llx, old_pcn 0x%llx, biza_entry old_lcn 0x%llx, biza_entry old_pcn 0x%llx, wp 0x%llx, oldest 0x%px\n",
+			//        oldest->parity ? "parity" : "data", pcn, old_lcn,
+			//        old_pcn, oldest->lcn, oldest->raum_chunk, wp,
+			//        oldest);
 			data_buffer = xa_load(&bt->dc, old_pcn);
 			BUG_ON(!data_buffer);
 			xa_erase(&bt->dc, old_pcn);
@@ -1488,9 +1507,11 @@ static inline void biza_get_raum_write_location(struct biza_target *bt,
 		}
 
 		kfree(oldest);
-		atomic64_dec(&dev->lru_element_count);
 	} else {
-		// mutex_unlock(&dev->lru_list_lock);
+		chunk = free_chunk->chunk;
+		list_del(&free_chunk->link);
+		kfree(free_chunk);
+		spin_unlock_irqrestore(&dev->lru_list_lock, flags);
 	}
 
 	content = kzalloc(sizeof(struct biza_raum_location_entry), GFP_KERNEL);
@@ -1505,12 +1526,8 @@ static inline void biza_get_raum_write_location(struct biza_target *bt,
 	content->slot = slot;
 	content->drive_idx = drive_idx;
 	spin_lock_irqsave(&dev->lru_list_lock, flags);
-	free_chunk = list_first_entry_or_null(&dev->free_raum_chunks,
-					      biza_free_raum_chunk_t, link);
-	if (unlikely(!free_chunk)) {
-		BUG_ON(1);
-	}
-	content->raum_chunk = free_chunk->chunk;
+	content->raum_chunk = chunk;
+	*offset = chunk;
 
 	if (parity) {
 		xa_store(&bt->raum_parity, stripe_no, content,
@@ -1519,12 +1536,9 @@ static inline void biza_get_raum_write_location(struct biza_target *bt,
 		xa_store(&bt->raum_data, lcn, content, GFP_NOWAIT | GFP_NOIO);
 	}
 
-	*offset = free_chunk->chunk;
 	// spin_lock(&dev->lru_list_lock);
 
-	list_del(&free_chunk->link);
 	list_add_tail(&content->link, &dev->lru_list);
-	atomic64_inc(&dev->lru_element_count);
 	spin_unlock_irqrestore(&dev->lru_list_lock, flags);
 	// spin_unlock(&dev->lru_list_lock);
 
@@ -2454,6 +2468,7 @@ static void biza_handle_bio(struct biza_target *bt, struct bio *bio)
 {
 	enum req_opf op;
 	int ret;
+	unsigned long flags;
 
 	if (bio->bi_vcnt > 1) {
 		/** TODO: support bi_vcnt > 1 **/
@@ -2513,6 +2528,7 @@ static void biza_io_work(struct work_struct *work)
 		container_of(work, struct biza_io_work, work);
 	struct biza_target *bt = iowork->bt;
 	struct bio *bio;
+	unsigned long flags;
 
 	mutex_lock(&bt->io_lock);
 
@@ -2542,6 +2558,7 @@ static int biza_queue_io_work(struct biza_target *bt, struct bio *bio)
 		       bt->params->chunk_size_sector_shift;
 	struct biza_io_work *iowork;
 	int ret = 0;
+	unsigned long flags;
 
 	mutex_lock(&bt->io_lock);
 

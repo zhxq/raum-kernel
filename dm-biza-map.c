@@ -423,7 +423,6 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 					list_add_tail(&free_chunk->link,
 						      &dev->free_raum_chunks);
 					list_del(&org_raum_stripe_data->link);
-					atomic64_dec(&dev->lru_element_count);
 					xa_erase(&bt->raum_parity,
 						 org_stripe_no);
 
@@ -541,8 +540,8 @@ void biza_map_remap(struct biza_target *bt, sector_t src_pcn, sector_t dst_pcn)
 		// BUG_ON(bt->map->l2p[lcn].chunk_no != src_pcn);
 		if (bt->map->l2p[lcn].chunk_no != src_pcn) {
 			pr_err("mismatch src_pcn -- lcn: 0x%llx, src pcn: 0x%llx, current lcn -> pcn: 0x%llx, dst pcn: 0x%llx, stripe_no: 0x%llx, slot: 0x%u\n",
-			       lcn, src_pcn, stripe->parity_pcns[slot], dst_pcn,
-			       stripe_no, slot);
+			       lcn, src_pcn, bt->map->l2p[lcn].chunk_no,
+			       dst_pcn, stripe_no, slot);
 			biza_pcn_to_idx(bt, bt->map->l2p[lcn].chunk_no,
 					&read_drive_idx, &read_zone_idx,
 					&read_offset);
