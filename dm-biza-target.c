@@ -11,30 +11,158 @@ static inline uint8_t biza_predict_isolation_domain(struct biza_target *bt,
 	       bt->params->nr_isolation_domains;
 }
 
-int biza_flush_raum_area(struct biza_target *bt, uint8_t drive_idx, sector_t wp,
-			 sector_t nlb, sector_t raum_location)
+// sector_t biza_flush_raum_area(struct biza_target *bt, uint8_t drive_idx,
+// 			      uint32_t zone_idx, sector_t wp, sector_t nlb,
+// 			      sector_t raum_location)
+// {
+// 	struct biza_raum_dev *dev = &bt->raum_devs[drive_idx];
+// 	struct gendisk *disk = dev->bdev->bd_disk;
+// 	struct nvme_passthru_cmd cmd = {};
+// 	uint64_t result;
+// 	int err;
+// 	cmd.opcode = nvme_cmd_zone_mgmt_send;
+// 	cmd.cdw10 = wp & 0xffffffff;
+// 	cmd.cdw11 = wp >> 32;
+// 	cmd.cdw12 = nlb - 1;
+// 	cmd.cdw13 = (0x12 & 0xff);
+// 	// RAUM addrs should be small enough to fit in 32-bit ints
+// 	cmd.cdw14 = raum_location & 0xffffffff;
+// 	// But just for the convention...
+// 	cmd.cdw15 = raum_location >> 32;
+// 	cmd.nsid = dev->ns_id;
+// 	err = disk->fops->ioctl(dev->bdev, 0, NVME_IOCTL_IO_CMD,
+// 				(unsigned long)&cmd);
+// 	if (err) {
+// 		pr_err("Error code: %d\n", err);
+// 	}
+// 	result = cmd.result;
+// 	atomic64_inc(&bt->devs[drive_idx].zones[zone_idx].finished_ios);
+// 	// pr_err("FLUSHING!!!! wp: 0x%llx, cdw12: 0x%llx, raum_location: 0x%llx, ns_id: %u\n",
+// 	//        wp, (nlb - 1), raum_location, dev->ns_id);
+// 	return (sector_t)result;
+// }
+
+sector_t biza_flush_raum_area(struct biza_target *bt, uint8_t drive_idx,
+			      uint32_t zone_idx, sector_t wp, sector_t zone_pcn,
+			      sector_t nlb, sector_t raum_chunk)
 {
-	// TODO: use zone append
 	struct biza_raum_dev *dev = &bt->raum_devs[drive_idx];
-	struct gendisk *disk = dev->bdev->bd_disk;
-	struct nvme_passthru_cmd cmd = {};
+	struct request_queue *q = dev->bdev->bd_disk->queue;
+	struct request *req;
+	struct biza_nvme_request *nrq;
+	struct nvme_command *cmd;
+	uint64_t result = 0;
+	sector_t raum_location = raum_chunk
+				 << bt->params->chunk_size_sector_shift;
 	int err;
-	cmd.opcode = nvme_cmd_flush_raum;
-	cmd.cdw10 = wp & 0xffffffff;
-	cmd.cdw11 = wp >> 32;
-	cmd.cdw12 = nlb - 1;
-	cmd.cdw13 = 0;
-	// RAUM addrs should be small enough to fit in 32-bit ints
-	cmd.cdw14 = raum_location & 0xffffffff;
-	// But just for the convention...
-	cmd.cdw15 = raum_location >> 32;
-	cmd.nsid = dev->ns_id;
-	err = disk->fops->ioctl(dev->bdev, 0, NVME_IOCTL_IO_CMD,
-				(unsigned long)&cmd);
-	// pr_err("FLUSHING!!!! wp: 0x%llx, cdw12: 0x%llx, raum_location: 0x%llx, ns_id: %u\n",
-	//        wp, (nlb - 1), raum_location, dev->ns_id);
-	return err;
+
+	req = blk_mq_alloc_request(q, REQ_OP_DRV_IN, 0);
+	if (IS_ERR(req)) {
+		BUG_ON(1);
+		return (sector_t)PTR_ERR(req);
+	}
+
+	req->rq_flags |= RQF_DONTPREP;
+	nrq = blk_mq_rq_to_pdu(req);
+	cmd = nrq->cmd;
+	memset(cmd, 0, sizeof(*cmd));
+
+	cmd->common.opcode =
+		nvme_cmd_flush_raum; // nvme_cmd_zone_mgmt_send (check your headers)
+	cmd->common.nsid = cpu_to_le32(dev->ns_id);
+	cmd->common.cdw10 = cpu_to_le32(wp & 0xffffffff);
+	cmd->common.cdw11 = cpu_to_le32(wp >> 32);
+	cmd->common.cdw12 = cpu_to_le32(nlb - 1);
+	cmd->common.cdw13 = 0;
+	cmd->common.cdw14 = cpu_to_le32(raum_location & 0xffffffff);
+	cmd->common.cdw15 = cpu_to_le32(raum_location >> 32);
+
+	err = blk_execute_rq(dev->bdev->bd_disk, req, 0);
+	if (err) {
+		pr_err("Biza: Command failed with %d\n", err);
+		BUG_ON(1);
+	} else {
+		result = le64_to_cpu(nrq->result.u64);
+	}
+	blk_mq_free_request(req);
+
+	return (sector_t)result;
 }
+
+// int biza_flush_raum_area(struct biza_target *bt, uint8_t drive_idx,
+// 			 uint32_t zone_idx, sector_t wp, sector_t zone_pcn,
+// 			 sector_t nlb, sector_t raum_chunk)
+// {
+// 	int ret, i;
+// 	sector_t raum_location = raum_chunk
+// 				 << bt->params->chunk_size_sector_shift;
+// 	nvme_req();
+// 	sector_t raum_pcn = biza_raum_idx_to_pcn(bt, drive_idx, raum_chunk);
+// 	uint8_t *data_buffer = xa_load(&bt->dc, raum_pcn);
+// 	struct bio *chunkio = bio_alloc_bioset(GFP_NOIO, 1, &bt->bio_set);
+// 	struct biza_chunkioctx *chunkioctx;
+// 	biza_stripe_head_t *sh = biza_get_stripe_head_with_no(
+// 		bt, bt->map->p2l[raum_pcn].stripe_no);
+// 	BUG_ON(sh == NULL);
+// 	bool parity = bt->map->p2l[raum_pcn].chunk_no == BIZA_MAP_PARITY;
+// 	sh->ioctx = biza_alloc_stripe_head_ioctx(bt, 1);
+// 	struct biza_stripe_head_ioctx *shioctx = sh->ioctx;
+// 	BUG_ON(shioctx == NULL);
+
+// 	if (!chunkio)
+// 		return -ENOMEM;
+// 	// pr_err("Before add_page is_parity? %d\n", parity);
+// 	if (!parity) {
+// 		ret = bio_add_page(chunkio, virt_to_page(data_buffer),
+// 				   bt->params->chunk_size_byte, 0);
+// 	} else {
+// 		for (i = 0; i < bt->params->m; ++i) {
+// 			ret = bio_add_page(
+// 				chunkio,
+// 				virt_to_page(sh->parity_cache +
+// 					     i * bt->params->chunk_size_byte),
+// 				bt->params->chunk_size_byte, 0);
+// 		}
+// 	}
+
+// 	// pr_err("After add_page\n");
+// 	if (ret != bt->params->chunk_size_byte)
+// 		return -EIO;
+
+// 	bio_set_dev(chunkio, bt->devs[drive_idx].dev->bdev);
+// 	chunkio->bi_opf = REQ_OP_ZONE_APPEND | REQ_SYNC;
+// 	chunkio->bi_iter.bi_sector = wp;
+// 	chunkio->bi_iter.bi_size = bt->params->chunk_size_byte;
+// 	chunkio->bi_end_io = biza_chunkio_endio;
+
+// 	chunkioctx = kzalloc(sizeof(struct biza_chunkioctx), GFP_NOIO);
+// 	if (!chunkioctx)
+// 		return -ENOMEM;
+// 	chunkioctx->sh = sh;
+// 	chunkioctx->type = parity ? BIZA_PARITY_UPDATE : BIZA_DATA_UPDATE;
+
+// 	if (!parity) {
+// 		chunkioctx->stime = jiffies;
+// 	}
+// 	chunkioctx->bt = bt;
+// 	chunkioctx->lcn = bt->map->p2l[raum_pcn].chunk_no;
+// 	chunkioctx->pcn = zone_pcn;
+// 	chunkioctx->drive_idx = drive_idx;
+// 	chunkioctx->slot = bt->map->p2l[raum_pcn].slot;
+// 	chunkioctx->in_raum = false;
+// 	chunkioctx->raum_flush_to_zone = true;
+
+// 	chunkio->bi_private = chunkioctx;
+
+// 	if (parity) {
+// 		shioctx->parity_pcns[bt->map->p2l[raum_pcn].slot] = zone_pcn;
+// 	}
+
+// 	refcount_inc(&shioctx->ref);
+
+// 	submit_bio_noacct(chunkio);
+// 	return 0;
+// }
 
 // open an empty zone with zrwa
 // return opend zone idx, idx = dev->nr_zones means no empty zone or open error
@@ -113,6 +241,8 @@ int biza_finish_zone(struct biza_target *bt, struct biza_dev *dev,
 
 	dev->zones[zone_idx].wp =
 		dev->zones[zone_idx].start + dev->zones[zone_idx].capacity;
+	atomic64_set(&dev->zones[zone_idx].in_flight_ios, 0);
+	atomic64_set(&dev->zones[zone_idx].finished_ios, 0);
 	ret = blkdev_zone_mgmt(dev->dev->bdev, REQ_OP_ZONE_FINISH,
 			       dev->zones[zone_idx].start,
 			       dev->zones[zone_idx].len, GFP_NOIO);
@@ -187,6 +317,8 @@ static int biza_init_zone(struct blk_zone *blkz, unsigned int idx, void *data)
 	zone->capacity = blkz->capacity;
 	zone->len = blkz->len;
 	zone->nr_invalid_chunks = 0;
+	atomic64_set(&zone->in_flight_ios, 0);
+	atomic64_set(&zone->finished_ios, 0);
 
 	dev->capacity += zone->capacity;
 	dev->len += zone->len;
@@ -398,19 +530,17 @@ static int biza_init_raum_devs(struct dm_target *ti)
 		}
 
 		INIT_LIST_HEAD(&dev->free_raum_chunks);
-		spin_lock_init(&dev->free_raum_chunks_lock);
+		INIT_LIST_HEAD(&dev->lru_list);
+		spin_lock_init(&dev->lru_list_lock);
 
-		spin_lock_irq(&dev->free_raum_chunks_lock);
+		spin_lock_irq(&dev->lru_list_lock);
 		for (j = 0; j < dev->capacity_in_chunks; j++) {
 			chunk = kzalloc(sizeof(biza_free_raum_chunk_t),
 					GFP_KERNEL);
 			chunk->chunk = j;
 			list_add_tail(&chunk->link, &dev->free_raum_chunks);
 		}
-		spin_unlock_irq(&dev->free_raum_chunks_lock);
-
-		INIT_LIST_HEAD(&dev->lru_list);
-		mutex_init(&dev->lru_list_lock);
+		spin_unlock_irq(&dev->lru_list_lock);
 
 		atomic64_set(&dev->lru_element_count, 0);
 
@@ -916,8 +1046,8 @@ static biza_stripe_head_t *biza_get_partial_stripe_head(struct biza_target *bt)
 }
 
 // Get a stripe head from cache using stripe no
-static biza_stripe_head_t *biza_get_stripe_head_with_no(struct biza_target *bt,
-							uint64_t no)
+biza_stripe_head_t *biza_get_stripe_head_with_no(struct biza_target *bt,
+						 uint64_t no)
 {
 	biza_stripe_head_t *sh = NULL, *cur = NULL, *tmp = NULL;
 
@@ -1060,6 +1190,13 @@ static inline bool biza_allocate_wp(struct biza_target *bt, uint8_t drive_idx,
 
 		up_read(&dev->ozlock);
 		down_write(&dev->ozlock);
+		while (atomic64_read(&zone->in_flight_ios) !=
+		       atomic64_read(&zone->finished_ios)) {
+			pr_err("Waiting for in flight io (%llu/%llu finished)\n",
+			       atomic64_read(&zone->in_flight_ios),
+			       atomic64_read(&zone->finished_ios));
+			cpu_relax();
+		}
 		ret = biza_finish_zone(bt, dev, zone_idx);
 		pr_err("finish zone %u\n", zone_idx);
 		dev->open_zones[oz_idx] = biza_open_empty_zone(
@@ -1211,6 +1348,7 @@ static bool biza_get_zone_write_location(struct biza_target *bt,
 		biza_allocate_wp(bt, drive_idx, oz_idx, *zone_idx);
 		*zone_idx = dev->open_zones[oz_idx];
 		zone = &dev->zones[*zone_idx];
+		atomic64_inc(&zone->in_flight_ios);
 
 		// wp_off = (atomic64_read(&zone->wp) - zone->start) >> bt->params->chunk_size_sector_shift;
 		spin_unlock_irq(&zone->zlock);
@@ -1247,11 +1385,12 @@ static inline void biza_get_raum_write_location(struct biza_target *bt,
 	uint64_t raid_offset;
 	uint32_t zone_idx;
 	sector_t wp;
-	sector_t pcn, old_pcn;
+	sector_t pcn, old_lcn, old_pcn;
 	biza_free_raum_chunk_t *free_chunk;
 	struct biza_stripe *stripe = NULL;
 	biza_stripe_head_t *sh;
 	uint8_t *data_buffer;
+	unsigned long flags;
 
 	struct biza_raum_dev *dev = &bt->raum_devs[drive_idx];
 	// spin_lock_irq(&dev->free_raum_chunks_lock);
@@ -1259,90 +1398,100 @@ static inline void biza_get_raum_write_location(struct biza_target *bt,
 	// If in RAUM, then just return the original location
 
 	// Try get a location in that drive's RAUM area
-	// if (atomic64_read(&dev->lru_element_count) == dev->capacity_in_chunks) {
-	// 	// If full, evict an entry
-	// 	oldest = list_first_entry(
-	// 		&dev->lru_list, struct biza_raum_location_entry, link);
-	// 	free_chunk =
-	// 		kzalloc(sizeof(biza_free_raum_chunk_t), GFP_ATOMIC);
-	// 	free_chunk->chunk = oldest->raum_chunk;
+	if (atomic64_read(&dev->lru_element_count) == dev->capacity_in_chunks) {
+		// If full, evict an entry
 
-	// 	// mutex_lock(&dev->lru_list_lock);
-	// 	list_del(&oldest->link);
-	// 	list_add_tail(&free_chunk->link, &dev->free_raum_chunks);
-	// 	// mutex_unlock(&dev->lru_list_lock);
-	// 	// pr_err("loc: lcn 0x%llx, drive_idx: %u\n", oldest->lcn,
-	// 	//        drive_idx);
-	// 	// down_read(&dev->ozlock);
-	// 	biza_get_write_location(bt, oldest->lcn, drive_idx, &zone_idx,
-	// 				&raid_offset);
-	// 	// up_read(&dev->ozlock);
+		free_chunk =
+			kzalloc(sizeof(biza_free_raum_chunk_t), GFP_ATOMIC);
 
-	// 	// TODO: zone append
-	// 	wp = biza_idx_to_sector(bt, drive_idx, zone_idx, raid_offset,
-	// 				true);
-	// 	biza_flush_raum_area(
-	// 		bt, drive_idx, wp, bt->params->chunk_size_sector,
-	// 		oldest->raum_chunk
-	// 			<< bt->params->chunk_size_sector_shift);
+		spin_lock_irqsave(&dev->lru_list_lock, flags);
+		oldest = list_first_entry(
+			&dev->lru_list, struct biza_raum_location_entry, link);
+		free_chunk->chunk = oldest->raum_chunk;
+		// spin_lock(&dev->lru_list_lock);
+		list_del(&oldest->link);
+		list_add_tail(&free_chunk->link, &dev->free_raum_chunks);
+		// spin_unlock(&dev->lru_list_lock);
+		spin_unlock_irqrestore(&dev->lru_list_lock, flags);
+		// pr_err("loc: lcn 0x%llx, drive_idx: %u\n", oldest->lcn,
+		//        drive_idx);
+		biza_get_write_location(bt, oldest->lcn, drive_idx, &zone_idx,
+					&raid_offset);
 
-	// 	pcn = biza_idx_to_pcn(bt, drive_idx, zone_idx, raid_offset);
-	// 	if (parity) {
-	// 		// Update mapping table for parity chunks
-	// 		stripe = xa_load(&bt->map->stripe_table,
-	// 				 oldest->stripe_no);
-	// 		old_pcn = stripe->parity_pcns[oldest->slot];
+		wp = biza_idx_to_sector(bt, drive_idx, zone_idx, raid_offset,
+					true);
+		pcn = biza_idx_to_pcn(bt, drive_idx, zone_idx, raid_offset);
+		wp = biza_flush_raum_area(bt, drive_idx, zone_idx, wp, pcn,
+					  bt->params->chunk_size_sector,
+					  oldest->raum_chunk);
 
-	// 		bt->map->p2l[pcn].chunk_no = BIZA_MAP_PARITY;
-	// 		bt->map->p2l[pcn].stripe_no = oldest->stripe_no;
-	// 		bt->map->p2l[pcn].slot = oldest->slot;
-	// 		bt->map->p2l[pcn].in_raum = false;
-	// 		if (old_pcn != BIZA_MAP_INVALID &&
-	// 		    old_pcn != BIZA_MAP_UNMAPPED) {
-	// 			bt->map->p2l[old_pcn].chunk_no =
-	// 				BIZA_MAP_INVALID;
-	// 			bt->map->p2l[old_pcn].stripe_no =
-	// 				BIZA_MAP_INVALID;
-	// 			bt->map->p2l[old_pcn].slot =
-	// 				(uint8_t)BIZA_MAP_INVALID;
-	// 		}
+		pcn = wp >> bt->params->chunk_size_sector_shift;
 
-	// 		sh = xa_load(&bt->fshc, oldest->stripe_no);
-	// 		if (sh) {
-	// 			// pr_err("!!Free parity buffer, pcn=0x%llx, sh->parity_cache=0x%px\n", pcn, sh->parity_cache);
-	// 			xa_erase(&bt->fshc, stripe_no);
-	// 			biza_free_stripe_head(bt, sh);
-	// 		}
-	// 		xa_erase(&bt->raum_parity, oldest->stripe_no);
-	// 	} else {
-	// 		// Update mapping table for data chunks
-	// 		old_pcn = bt->map->l2p[lcn].chunk_no;
-	// 		bt->map->l2p[lcn].chunk_no = pcn;
-	// 		bt->map->l2p[lcn].stripe_no = oldest->stripe_no;
-	// 		bt->map->l2p[lcn].slot = oldest->slot;
-	// 		bt->map->l2p[lcn].in_raum = false;
-	// 		bt->map->p2l[pcn].chunk_no = lcn;
-	// 		bt->map->p2l[pcn].stripe_no = oldest->stripe_no;
-	// 		bt->map->p2l[pcn].slot = oldest->slot;
-	// 		bt->map->p2l[pcn].in_raum = false;
-	// 		bt->map->p2l[old_pcn].chunk_no = BIZA_MAP_INVALID;
-	// 		bt->map->p2l[old_pcn].stripe_no = BIZA_MAP_INVALID;
-	// 		bt->map->p2l[old_pcn].slot = (uint8_t)BIZA_MAP_INVALID;
-	// 		data_buffer = xa_load(&bt->dc, pcn);
-	// 		BUG_ON(!data_buffer);
-	// 		xa_erase(&bt->dc, pcn);
-	// 		// pr_err("!!Free data buffer, drive_idx %u, zone_idx %u, offset 0x%llx, pointer: 0x%px\n", drive_idx, zone_idx, wp_off, data_buffer);
-	// 		biza_mempool_free(&bt->dcpool, data_buffer);
-	// 		xa_erase(&bt->raum_data, oldest->lcn);
-	// 	}
+		pr_err("%s LRU Evicted to pcn 0x%llx, wp 0x%llx, oldest 0x%px\n",
+		       oldest->parity ? "parity" : "data", pcn, wp, oldest);
+		stripe = xa_load(&bt->map->stripe_table, oldest->stripe_no);
+		if (oldest->parity) {
+			// Update mapping table for parity chunks
+			pr_err("pcn 0x%llx stripe 0x%px 0x%llx slot 0x%x parity_pcns 0x%px\n",
+			       pcn, stripe, oldest->stripe_no, oldest->slot,
+			       stripe->parity_pcns);
+			old_pcn = stripe->parity_pcns[oldest->slot];
+			pr_err("old_pcn 0x%llx stripe 0x%px\n", old_pcn,
+			       stripe);
+			bt->map->p2l[pcn].chunk_no = BIZA_MAP_PARITY;
+			bt->map->p2l[pcn].stripe_no = oldest->stripe_no;
+			bt->map->p2l[pcn].slot = oldest->slot;
+			bt->map->p2l[pcn].in_raum = false;
+			if (old_pcn != BIZA_MAP_INVALID &&
+			    old_pcn != BIZA_MAP_UNMAPPED) {
+				bt->map->p2l[old_pcn].chunk_no =
+					BIZA_MAP_INVALID;
+				bt->map->p2l[old_pcn].stripe_no =
+					BIZA_MAP_INVALID;
+				bt->map->p2l[old_pcn].slot =
+					(uint8_t)BIZA_MAP_INVALID;
+			}
 
-	// 	// min_heap_pop(dev->heap, &lru_funcs);
+			sh = xa_load(&bt->fshc, oldest->stripe_no);
+			pr_err("pcn 0x%llx sh 0x%px\n", pcn, sh);
+			if (sh) {
+				// pr_err("!!Free parity buffer, pcn=0x%llx, sh->parity_cache=0x%px\n", pcn, sh->parity_cache);
+				xa_erase(&bt->fshc, stripe_no);
+				biza_free_stripe_head(bt, sh);
+			}
+			xa_erase(&bt->raum_parity, oldest->stripe_no);
+		} else {
+			// Update mapping table for data chunks
+			old_lcn = stripe->data_lcns[oldest->slot];
+			old_pcn = bt->map->l2p[old_lcn].chunk_no;
+			bt->map->l2p[old_lcn].chunk_no = pcn;
+			bt->map->l2p[old_lcn].stripe_no = oldest->stripe_no;
+			bt->map->l2p[old_lcn].slot = oldest->slot;
+			bt->map->l2p[old_lcn].in_raum = false;
+			bt->map->p2l[pcn].chunk_no = old_lcn;
+			bt->map->p2l[pcn].stripe_no = oldest->stripe_no;
+			bt->map->p2l[pcn].slot = oldest->slot;
+			bt->map->p2l[pcn].in_raum = false;
+			bt->map->p2l[old_pcn].chunk_no = BIZA_MAP_INVALID;
+			bt->map->p2l[old_pcn].stripe_no = BIZA_MAP_INVALID;
+			bt->map->p2l[old_pcn].slot = (uint8_t)BIZA_MAP_INVALID;
+			pr_err("%s LRU Evicted to pcn 0x%llx, old_lcn 0x%llx, old_pcn 0x%llx, biza_entry old_lcn 0x%llx, biza_entry old_pcn 0x%llx, wp 0x%llx, oldest 0x%px\n",
+			       oldest->parity ? "parity" : "data", pcn, old_lcn,
+			       old_pcn, oldest->lcn, oldest->raum_chunk, wp,
+			       oldest);
+			data_buffer = xa_load(&bt->dc, old_pcn);
+			BUG_ON(!data_buffer);
+			xa_erase(&bt->dc, old_pcn);
+			// pr_err("!!Free data buffer, drive_idx %u, zone_idx %u, offset 0x%llx, pointer: 0x%px\n", drive_idx, zone_idx, wp_off, data_buffer);
+			biza_mempool_free(&bt->dcpool, data_buffer);
+			xa_erase(&bt->raum_data, oldest->lcn);
+		}
 
-	// 	kfree(oldest);
-	// 	atomic64_dec(&dev->lru_element_count);
-	// } else {
-	// 	// mutex_unlock(&dev->lru_list_lock);
-	// }
+		kfree(oldest);
+		atomic64_dec(&dev->lru_element_count);
+	} else {
+		// mutex_unlock(&dev->lru_list_lock);
+	}
 
 	content = kzalloc(sizeof(struct biza_raum_location_entry), GFP_KERNEL);
 
@@ -1355,6 +1504,7 @@ static inline void biza_get_raum_write_location(struct biza_target *bt,
 	content->lcn = lcn;
 	content->slot = slot;
 	content->drive_idx = drive_idx;
+	spin_lock_irqsave(&dev->lru_list_lock, flags);
 	free_chunk = list_first_entry_or_null(&dev->free_raum_chunks,
 					      biza_free_raum_chunk_t, link);
 	if (unlikely(!free_chunk)) {
@@ -1370,11 +1520,13 @@ static inline void biza_get_raum_write_location(struct biza_target *bt,
 	}
 
 	*offset = free_chunk->chunk;
-	mutex_lock(&dev->lru_list_lock);
+	// spin_lock(&dev->lru_list_lock);
+
 	list_del(&free_chunk->link);
 	list_add_tail(&content->link, &dev->lru_list);
 	atomic64_inc(&dev->lru_element_count);
-	mutex_unlock(&dev->lru_list_lock);
+	spin_unlock_irqrestore(&dev->lru_list_lock, flags);
+	// spin_unlock(&dev->lru_list_lock);
 
 	// spin_unlock_irq(&dev->free_raum_chunks_lock);
 }
@@ -1592,7 +1744,7 @@ static inline void biza_end_stripe_head_io(biza_stripe_head_t *sh,
 	}
 }
 
-static void biza_chunkio_endio(struct bio *chunkio)
+void biza_chunkio_endio(struct bio *chunkio)
 {
 	struct biza_chunkioctx *chunkioctx = chunkio->bi_private;
 	struct bio *bio;
@@ -1616,8 +1768,8 @@ static void biza_chunkio_endio(struct bio *chunkio)
 			// pr_err("dm-biza: io failed! io_type %d, bi_status %d, offset %lld, sectors %u",
 			//        bio_op(chunkio), status, chunkio->bi_iter.bi_sector,
 			//        bio_sectors(chunkio));
-			pr_err("dm-biza: io failed! lcn: 0x%llx, io_type %d, bi_status %d, offset 0x%llx, sectors %u\n",
-			       chunkioctx->lcn, bio_op(chunkio), status,
+			pr_err("dm-biza: io failed! bi_status %u lcn: 0x%llx, io_type %d, bi_status %d, offset 0x%llx, sectors %u\n",
+			       status, chunkioctx->lcn, bio_op(chunkio), status,
 			       chunkio->bi_iter.bi_sector,
 			       bio_sectors(chunkio));
 
@@ -1631,10 +1783,18 @@ static void biza_chunkio_endio(struct bio *chunkio)
 			chunkioctx->pcn = biza_sector_to_pcn(
 				chunkioctx->bt, chunkioctx->drive_idx,
 				bi_sector);
-			// pr_err("lcn: 0x%llx, old pcn: 0x%llx, new_pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d, sector: 0x%llx\n",
-			//        chunkioctx->lcn, old_pcn, chunkioctx->pcn,
-			//        sh->no, chunkioctx->slot, chunkioctx->in_raum,
-			//        bi_sector);
+			biza_pcn_to_idx(chunkioctx->bt, chunkioctx->pcn,
+					&drive_idx, &zone_idx, &offset);
+			atomic64_inc(&chunkioctx->bt->devs[drive_idx]
+					      .zones[zone_idx]
+					      .finished_ios);
+			// if (chunkioctx->raum_flush_to_zone) {
+			// 	pr_err("flushed lcn: 0x%llx, old pcn: 0x%llx, new_pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d, sector: 0x%llx\n",
+			// 	       chunkioctx->lcn, old_pcn,
+			// 	       chunkioctx->pcn, sh->no,
+			// 	       chunkioctx->slot, chunkioctx->in_raum,
+			// 	       bi_sector);
+			// }
 		}
 
 		if (chunkioctx->type == BIZA_DATA_WRITE) {
@@ -1698,6 +1858,7 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 	struct bvec_iter iter;
 	struct bio_vec bvec;
 	struct biza_raum_location_entry *entry;
+	unsigned long flags;
 
 	struct block_device *bdev;
 	sector_t bi_sector;
@@ -1728,17 +1889,19 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 			offset = entry->raum_chunk;
 
 			raum_dev = &bt->raum_devs[drive_idx];
-			mutex_lock(&raum_dev->lru_list_lock);
+			// spin_lock(&raum_dev->lru_list_lock);
+			spin_lock_irqsave(&raum_dev->lru_list_lock, flags);
 			list_del(&entry->link);
 			list_add_tail(&entry->link, &raum_dev->lru_list);
-			mutex_unlock(&raum_dev->lru_list_lock);
+			spin_unlock_irqrestore(&raum_dev->lru_list_lock, flags);
+			// spin_unlock(&raum_dev->lru_list_lock);
 
 			bdev = raum_dev->bdev;
 			bi_sector = biza_raum_idx_to_sector(bt, offset);
 			pcn = biza_raum_idx_to_pcn(bt, drive_idx, offset);
 
-			pr_err("Writing RAUM in-place lcn 0x%llx pcn 0x%llx drive %u, offset 0x%llx sector 0x%llx shno 0x%llx\n",
-			       lcn, pcn, drive_idx, offset, bi_sector, sh->no);
+			log("Writing RAUM in-place lcn 0x%llx pcn 0x%llx drive %u, offset 0x%llx sector 0x%llx shno 0x%llx\n",
+			    lcn, pcn, drive_idx, offset, bi_sector, sh->no);
 
 			if (WRITE_AMP_STAT)
 				atomic64_add(bt->params->chunk_size_sector,
@@ -1765,9 +1928,9 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 				pcn = biza_raum_idx_to_pcn(bt, drive_idx,
 							   offset);
 				bi_sector = biza_raum_idx_to_sector(bt, offset);
-				pr_err("Writing RAUM ZRWA lcn 0x%llx pcn 0x%llx drive %u, offset 0x%llx sector 0x%llx shno 0x%llx\n",
-				       lcn, pcn, drive_idx, offset, bi_sector,
-				       sh->no);
+				log("Writing RAUM ZRWA lcn 0x%llx pcn 0x%llx drive %u, offset 0x%llx sector 0x%llx shno 0x%llx\n",
+				    lcn, pcn, drive_idx, offset, bi_sector,
+				    sh->no);
 
 				// data_in_raum = false;
 				// bdev = bt->devs[drive_idx].dev->bdev;
@@ -1791,40 +1954,29 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 						      offset);
 				bi_sector = biza_idx_to_sector(
 					bt, drive_idx, zone_idx, offset, true);
-				pr_err("Writing zone lcn 0x%llx pcn 0x%llx drive %u zone %u offset 0x%llx sector 0x%llx shno 0x%llx\n",
-				       lcn, pcn, drive_idx, zone_idx, offset,
-				       bi_sector, sh->no);
-			}
-
-			data_buffer = biza_mempool_alloc(&bt->dcpool);
-			// pr_err("alloc data buffer, drive_idx %u, zone_idx %u, offset %llu, lcn %llu\n", drive_idx, zone_idx, offset, lcn);
-			if (!data_buffer)
-				BUG_ON(1);
-			// iter = bio->bi_iter;
-			// bvec = bio_iter_iovec(bio, iter);
-			// bvec_start = bvec_kmap_local(&bvec);
-			bvec_start = bvec_kmap_local(&bio->bi_io_vec[0]);
-			memcpy(data_buffer,
-			       bvec_start + bio->bi_iter.bi_bvec_done,
-			       bt->params->chunk_size_byte);
-			// memcpy(data_buffer, bvec_start,
-			//        bt->params->chunk_size_byte);
-
-			kunmap_local(bvec_start);
-			xa_store_irq(&bt->dc, pcn, data_buffer, GFP_KERNEL);
-
-			if (lcn == 0x10) {
-				pr_err("in_raum=%d %c%c%c%c%c%c%c%c\n",
-				       data_in_raum, data_buffer[64],
-				       data_buffer[65], data_buffer[66],
-				       data_buffer[67], data_buffer[68],
-				       data_buffer[69], data_buffer[70],
-				       data_buffer[71]);
+				log("Writing zone lcn 0x%llx pcn 0x%llx drive %u zone %u offset 0x%llx sector 0x%llx shno 0x%llx\n",
+				    lcn, pcn, drive_idx, zone_idx, offset,
+				    bi_sector, sh->no);
 			}
 
 			if (WRITE_AMP_STAT)
 				atomic64_add(bt->params->chunk_size_sector,
 					     &bt->data_write);
+		}
+
+		if (data_in_raum) {
+			data_buffer = biza_mempool_alloc(&bt->dcpool);
+			// pr_err("alloc data buffer, drive_idx %u, zone_idx %u, offset %llu, lcn %llu\n", drive_idx, zone_idx, offset, lcn);
+			if (!data_buffer)
+				BUG_ON(1);
+			iter = bio->bi_iter;
+			bvec = bio_iter_iovec(bio, iter);
+			bvec_start = bvec_kmap_local(&bvec);
+			memcpy(data_buffer, bvec_start,
+			       bt->params->chunk_size_byte);
+
+			kunmap_local(bvec_start);
+			xa_store(&bt->dc, pcn, data_buffer, GFP_KERNEL);
 		}
 
 		// TODO: when zone append, open a new zone if we know we are writing to the end of the pointer
@@ -1858,6 +2010,7 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 		chunkioctx->drive_idx = drive_idx;
 		chunkioctx->slot = sh->nr_data_written + i;
 		chunkioctx->in_raum = data_in_raum;
+		chunkioctx->raum_flush_to_zone = false;
 
 		chunkio->bi_private = chunkioctx;
 
@@ -1879,16 +2032,20 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 				drive_idx = entry->drive_idx;
 				offset = entry->raum_chunk;
 				raum_dev = &bt->raum_devs[drive_idx];
-				mutex_lock(&raum_dev->lru_list_lock);
+				spin_lock_irqsave(&raum_dev->lru_list_lock,
+						  flags);
+				// spin_lock(&raum_dev->lru_list_lock);
 				list_del(&entry->link);
 				list_add_tail(&entry->link,
 					      &raum_dev->lru_list);
-				mutex_unlock(&raum_dev->lru_list_lock);
+				// spin_unlock(&raum_dev->lru_list_lock);
+				spin_unlock_irqrestore(&raum_dev->lru_list_lock,
+						       flags);
 				bi_sector = biza_raum_idx_to_sector(bt, offset);
 				pcn = biza_raum_idx_to_pcn(bt, drive_idx,
 							   offset);
-				pr_err("Writing RAUM parity in-place lcn 0x%llx pcn 0x%llx drive %u offset 0x%llx sector 0x%llx\n",
-				       lcn, pcn, drive_idx, offset, bi_sector);
+				log("Writing RAUM parity in-place lcn 0x%llx pcn 0x%llx drive %u offset 0x%llx sector 0x%llx\n",
+				    lcn, pcn, drive_idx, offset, bi_sector);
 
 				if (WRITE_AMP_STAT)
 					atomic64_add(
@@ -1908,8 +2065,8 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 				bi_sector = biza_raum_idx_to_sector(bt, offset);
 				pcn = biza_raum_idx_to_pcn(bt, drive_idx,
 							   offset);
-				pr_err("Writing RAUM parity OOP lcn 0x%llx pcn 0x%llx drive %u offset 0x%llx sector 0x%llx\n",
-				       lcn, pcn, drive_idx, offset, bi_sector);
+				log("Writing RAUM parity OOP lcn 0x%llx pcn 0x%llx drive %u offset 0x%llx sector 0x%llx\n",
+				    lcn, pcn, drive_idx, offset, bi_sector);
 
 				if (WRITE_AMP_STAT)
 					atomic64_add(
@@ -1923,8 +2080,8 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 						     &offset, true);
 			bi_sector = biza_raum_idx_to_sector(bt, offset);
 			pcn = biza_raum_idx_to_pcn(bt, drive_idx, offset);
-			pr_err("Writing RAUM parity else lcn 0x%llx pcn 0x%llx drive %u offset 0x%llx sector 0x%llx\n",
-			       lcn, pcn, drive_idx, offset, bi_sector);
+			log("Writing RAUM parity else lcn 0x%llx pcn 0x%llx drive %u offset 0x%llx sector 0x%llx\n",
+			    lcn, pcn, drive_idx, offset, bi_sector);
 
 			if (WRITE_AMP_STAT)
 				atomic64_add(bt->params->chunk_size_sector,
@@ -1968,6 +2125,7 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 		// We always write parity chunks to RAUM
 		// Even if it has been previously evicted to flash
 		chunkioctx->in_raum = true;
+		chunkioctx->raum_flush_to_zone = false;
 
 		chunkio->bi_private = chunkioctx;
 
@@ -2218,16 +2376,15 @@ static int biza_submit_chunk_read(struct biza_target *bt, struct bio *bio,
 			biza_raum_pcn_to_idx(bt, pcn, &drive_idx, &offset);
 			bi_sector = biza_raum_idx_to_sector(bt, offset);
 			bdev = bt->raum_devs[drive_idx].bdev;
-			pr_err("Reading RAUM lcn 0x%llx pcn 0x%llx drive %u offset 0x%llx sector 0x%llx\n",
-			       lcn, pcn, drive_idx, offset, bi_sector);
+			log("Reading RAUM lcn 0x%llx pcn 0x%llx drive %u offset 0x%llx sector 0x%llx\n",
+			    lcn, pcn, drive_idx, offset, bi_sector);
 		} else {
 			biza_pcn_to_idx(bt, pcn, &drive_idx, &zone_idx,
 					&offset);
 			bi_sector = biza_idx_to_sector(bt, drive_idx, zone_idx,
 						       offset, false);
-			pr_err("Reading zone lcn 0x%llx pcn 0x%llx drive %u zone %u, offset 0x%llx sector 0x%llx\n",
-			       lcn, pcn, drive_idx, zone_idx, offset,
-			       bi_sector);
+			log("Reading zone lcn 0x%llx pcn 0x%llx drive %u zone %u, offset 0x%llx sector 0x%llx\n",
+			    lcn, pcn, drive_idx, zone_idx, offset, bi_sector);
 			bdev = bt->devs[drive_idx].dev->bdev;
 		}
 

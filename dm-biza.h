@@ -28,6 +28,8 @@
 #include <linux/random.h>
 #include <linux/compat.h>
 #include <linux/min_heap.h>
+#include <linux/blk-mq.h>
+// #define BIZA_LOG_DEBUG 1
 
 /** 0 means max **/
 #define NUM_SUBMIT_WORKER 2
@@ -76,6 +78,16 @@
 
 #define nvme_cmd_flush_raum 0x80
 
+#ifdef BIZA_LOG_DEBUG
+#define log(fmt, ...)                       \
+	do {                                \
+		pr_err(fmt, ##__VA_ARGS__); \
+	} while (0)
+#else
+#define log(fmt, ...) \
+	do {          \
+	} while (0)
+#endif
 // parameters
 struct biza_params {
 	uint8_t nr_drives;
@@ -130,6 +142,9 @@ struct biza_zone {
 	int8_t iso_dm_conf; // confidence of the isolation domain (if 0, correct)
 	int8_t iso_dm_vote;
 	uint8_t high_lat_score;
+
+	atomic64_t in_flight_ios;
+	atomic64_t finished_ios;
 
 	spinlock_t zlock;
 };
@@ -211,7 +226,7 @@ struct biza_raum_dev {
 	struct list_head lru_list;
 	atomic64_t lru_element_count;
 	spinlock_t free_raum_chunks_lock;
-	struct mutex lru_list_lock;
+	spinlock_t lru_list_lock;
 	// sector_t chunk_usage_list; // Chunk type (0: In-place Data; 1: Partial parity)
 	uint8_t **chunk_content;
 	// struct lru_heap_entry *heap_buf;
@@ -246,6 +261,18 @@ struct biza_stripe_head_ioctx {
 	refcount_t ref;
 	biza_sh_io_type_t type;
 	blk_status_t status;
+};
+
+struct biza_nvme_request {
+	struct nvme_command *cmd;
+	union nvme_result_biza {
+		__le32 u32;
+		__le64 u64;
+	} result;
+	u8 retries;
+	u8 flags;
+	u16 status;
+	/* There are more fields, but we only need these for the result */
 };
 
 // stripe head (run time) in biza
@@ -456,6 +483,7 @@ struct biza_chunkioctx {
 	uint8_t slot;
 	uint8_t drive_idx;
 	bool in_raum;
+	bool raum_flush_to_zone;
 
 	unsigned long stime; // I/O start time (in jiffies)
 };
@@ -474,6 +502,11 @@ int biza_reset_zone(struct biza_target *bt, struct biza_dev *dev,
 		    uint32_t zone_idx, bool all);
 uint32_t biza_open_empty_zone(struct biza_target *bt, struct biza_dev *dev,
 			      bool zrwa, biza_aware_type type);
+void biza_chunkio_endio(struct bio *chunkio);
+biza_stripe_head_t *biza_get_stripe_head_with_no(struct biza_target *bt,
+						 uint64_t no);
+struct biza_stripe_head_ioctx *
+biza_alloc_stripe_head_ioctx(struct biza_target *bt, uint8_t data_wrt_cnt);
 int biza_finish_zone(struct biza_target *bt, struct biza_dev *dev,
 		     uint32_t zone_idx);
 
@@ -553,7 +586,7 @@ static bool biza_is_valid_pcn(struct biza_target *bt, sector_t pcn)
 {
 	if (pcn >=
 	    bt->params->nr_internal_chunks + bt->params->nr_total_raum_chunks) {
-		pr_err("invalid pcn 0x%llx\n", pcn);
+		pr_err("Invalid pcn 0x%llx\n", pcn);
 		return false;
 	}
 

@@ -320,8 +320,8 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 	// unsigned long flags;
 	int i;
 
-	pr_err("Data update lcn: 0x%llx, pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
-	       lcn, pcn, no, slot, in_raum);
+	log("Data update lcn: 0x%llx, pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
+	    lcn, pcn, no, slot, in_raum);
 
 	org_pcn = bt->map->l2p[lcn].chunk_no;
 	org_stripe_no = bt->map->l2p[lcn].stripe_no;
@@ -415,7 +415,7 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 					// pr_err("Locking drive_idx %u, raum_chunk 0x%llx\n",
 					//        org_drive_idx,
 					//        org_raum_stripe_data->raum_chunk);
-					mutex_lock(&dev->lru_list_lock);
+					spin_lock(&dev->lru_list_lock);
 					// pr_err("Locked drive_idx %u, raum_chunk 0x%llx\n",
 					//        org_drive_idx,
 					//        org_raum_stripe_data->raum_chunk);
@@ -424,14 +424,14 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 						      &dev->free_raum_chunks);
 					list_del(&org_raum_stripe_data->link);
 					atomic64_dec(&dev->lru_element_count);
+					xa_erase(&bt->raum_parity,
+						 org_stripe_no);
 
 					// pr_err("Unlocking drive_idx %u, raum_chunk 0x%llx\n",
 					//        org_drive_idx,
 					//        org_raum_stripe_data->raum_chunk);
-					mutex_unlock(&dev->lru_list_lock);
+					spin_unlock(&dev->lru_list_lock);
 
-					xa_erase(&bt->raum_parity,
-						 org_stripe_no);
 					// pr_err("Unlocked drive_idx %u, raum_chunk 0x%llx\n",
 					//        org_drive_idx,
 					//        org_raum_stripe_data->raum_chunk);
@@ -451,8 +451,8 @@ void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
 	struct biza_stripe *stripe = NULL;
 	sector_t old_pcn;
 
-	pr_err("Parity update pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
-	       pcn, no, slot, in_raum);
+	log("Parity update pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
+	    pcn, no, slot, in_raum);
 	stripe = xa_load(&bt->map->stripe_table, no);
 	if (!stripe) {
 		BUG_ON(slot);

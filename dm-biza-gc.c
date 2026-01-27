@@ -151,8 +151,7 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 			src.count = bt->params->chunk_size_sector;
 
 			dst.bdev = dst_dev->dev->bdev;
-			dst.sector =
-				dst_zone->wp; // TODO: change wp to zone start loc for append
+			dst.sector = dst_zone->wp;
 			dst.count = bt->params->chunk_size_sector;
 
 			set_bit(BIZA_GC_KCOPY, &bt->gc->flags);
