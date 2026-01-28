@@ -210,9 +210,9 @@ static void biza_gc_work(struct work_struct *work)
     struct biza_dev *dev;
 
     if(WRITE_AMP_STAT) {
-        // pr_err("user_send %lld, data write %lld, parity write %lld, data in place update %lld, parity in place upate %lld\n",
+        pr_err("user_send %lld, data write %lld, parity write %lld, data in place update %lld, parity in place upate %lld\n",
         atomic64_read(&bt->user_send), atomic64_read(&bt->data_write), atomic64_read(&bt->parity_write), 
-        atomic64_read(&bt->data_in_place_update), atomic64_read(&bt->parity_in_place_update);
+        atomic64_read(&bt->data_in_place_update), atomic64_read(&bt->parity_in_place_update));
     }
 
     if (!biza_should_gc(bt)) {
