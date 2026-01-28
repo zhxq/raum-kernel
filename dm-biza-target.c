@@ -1447,6 +1447,9 @@ static inline void biza_get_raum_write_location(struct biza_target *bt,
 		//        oldest->parity ? "parity" : "data", pcn, wp, oldest);
 		stripe = xa_load(&bt->map->stripe_table, oldest->stripe_no);
 		if (oldest->parity) {
+			if (WRITE_AMP_STAT) {
+				atomic64_inc(&bt->parity_flush);
+			}
 			// Update mapping table for parity chunks
 			// pr_err("pcn 0x%llx stripe 0x%px 0x%llx slot 0x%x parity_pcns 0x%px\n",
 			//        pcn, stripe, oldest->stripe_no, oldest->slot,
@@ -1479,6 +1482,9 @@ static inline void biza_get_raum_write_location(struct biza_target *bt,
 			}
 			xa_erase(&bt->raum_parity, oldest->stripe_no);
 		} else {
+			if (WRITE_AMP_STAT) {
+				atomic64_inc(&bt->data_flush);
+			}
 			// Update mapping table for data chunks
 			old_lcn = stripe->data_lcns[oldest->slot];
 			old_pcn = bt->map->l2p[old_lcn].chunk_no;
@@ -2463,6 +2469,11 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 	return 0;
 }
 
+static int biza_handle_discard(struct biza_target *bt, struct bio *bio)
+{
+	return 0;
+}
+
 // Entry of I/O handling
 static void biza_handle_bio(struct biza_target *bt, struct bio *bio)
 {
@@ -2490,6 +2501,9 @@ static void biza_handle_bio(struct biza_target *bt, struct bio *bio)
 		break;
 	case REQ_OP_WRITE:
 		ret = biza_handle_write(bt, bio);
+		break;
+	case REQ_OP_DISCARD:
+		ret = biza_handle_discard(bt, bio);
 		break;
 	default:
 		pr_err("dm-biza: map error: Unsupported bio type 0x%x",
@@ -2637,6 +2651,14 @@ static void biza_io_hints(struct dm_target *ti, struct queue_limits *limits)
 
 	limits->logical_block_size = bt->params->chunk_size_byte;
 	limits->physical_block_size = bt->params->chunk_size_byte;
+	// /* Enable discards */
+	// limits->discard_granularity = 4096; // Usually 1 sector or page size
+	// limits->max_discard_sectors = UINT_MAX; // Max size of a single discard
+	// limits->max_hw_discard_sectors = UINT_MAX;
+
+	// /* This tells the DM core that this target supports discards */
+	// ti->discards_supported = true;
+	// ti->num_discard_bios = 1;
 
 	blk_limits_io_min(limits, bt->params->chunk_size_byte);
 	blk_limits_io_opt(limits, bt->params->chunk_size_byte * bt->params->k);
