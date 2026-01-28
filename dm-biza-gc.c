@@ -115,7 +115,7 @@ static void biza_gc_move_valid_data(struct biza_target *bt, uint8_t src_drive_id
     dst_dev = &bt->devs[dst_drive_idx];
     dst_zone = &dst_dev->zones[dst_zone_idx];
 
-    pr_err("GC source dev: %u, zone: %llu; dest dev: %u, zone: %llu\n", src_drive_idx, src_zone_idx, dst_drive_idx, dst_zone_idx);
+    pr_err("GC source dev: %u, zone: %u; dest dev: %u, zone: %u\n", src_drive_idx, src_zone_idx, dst_drive_idx, dst_zone_idx);
 
     BUG_ON(src_zone->cond != BLK_ZONE_COND_FULL);
     BUG_ON(dst_zone->cond == BLK_ZONE_COND_FULL);
