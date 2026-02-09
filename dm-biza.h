@@ -29,7 +29,9 @@
 #include <linux/compat.h>
 #include <linux/min_heap.h>
 #include <linux/blk-mq.h>
-// #define BIZA_LOG_DEBUG 1
+#define BIZA_LOG_DEBUG 1
+
+#define RAUM_BIG_CHUNK_PAGES 64
 
 /** 0 means max **/
 #define NUM_SUBMIT_WORKER 2
@@ -118,7 +120,8 @@ struct biza_params {
 	sector_t nr_chunks; // number of chunks for users (logical chunks)
 	sector_t nr_internal_chunks; // number of chunks in all zones of all SSDs (physical chunks)
 	sector_t nr_total_raum_chunks; // number of chunks in all RAUM spaces
-	sector_t nr_raum_chunks_per_drive; // number of chunks in a drive
+	sector_t nr_raum_chunks_per_drive; // number of chunks in a drive (4k ones)
+	sector_t nr_raum_big_chunks_per_drive; // number of big chunks in a drive (64/256k ones)
 };
 
 typedef enum biza_aware_type {
@@ -218,6 +221,22 @@ struct biza_dev {
 // 	.swp = my_swap,
 // };
 
+typedef struct biza_raum_big_chunk {
+	struct list_head list;
+	struct biza_chunkioctx **ctx;
+	struct biza_target *bt;
+	sector_t start_sector;
+	sector_t start_pcn;
+	uint32_t chunk_count;
+	uint32_t this_write_start_sector;
+	uint32_t this_write_start_chunk;
+	uint32_t this_write_chunk_count;
+	struct bio *chunkio;
+	uint8_t drive_idx;
+	atomic64_t updates_in_flight;
+	atomic64_t flush_in_flight;
+} biza_raum_big_chunk_t;
+
 // RAUM drives
 struct biza_raum_dev {
 	struct block_device *bdev;
@@ -227,7 +246,10 @@ struct biza_raum_dev {
 	sector_t len; // length (size) of the dev in number of sectors
 
 	struct list_head free_raum_chunks;
+	struct list_head in_use_raum_chunks;
+	struct list_head full_raum_chunks;
 	struct list_head lru_list;
+	struct xarray big_chunk_list;
 	spinlock_t free_raum_chunks_lock;
 	spinlock_t lru_list_lock;
 	// sector_t chunk_usage_list; // Chunk type (0: In-place Data; 1: Partial parity)
@@ -514,6 +536,12 @@ struct biza_stripe_head_ioctx *
 biza_alloc_stripe_head_ioctx(struct biza_target *bt, uint8_t data_wrt_cnt);
 int biza_finish_zone(struct biza_target *bt, struct biza_dev *dev,
 		     uint32_t zone_idx);
+inline void biza_get_write_location(struct biza_target *bt, uint64_t hint,
+				    uint8_t drive_idx, uint32_t *zone_idx,
+				    uint64_t *offset, sector_t size);
+void biza_free_stripe_head(struct biza_target *bt, biza_stripe_head_t *sh);
+void biza_mempool_free(struct biza_mempool *pool, uint8_t *element);
+void biza_bigchunkio_endio(struct bio *chunkio);
 
 /** Functions defined in dm-biza-gc.c **/
 int biza_ctr_gc(struct biza_target *bt);
@@ -571,6 +599,7 @@ void biza_dtr_pred(struct biza_target *bt);
 void biza_update_pred(struct biza_target *bt, sector_t lcn);
 uint8_t biza_choose_open_zone_to_write(struct biza_target *bt,
 				       uint8_t drive_idx, uint32_t hint);
+sector_t biza_round_chunk_no(sector_t chunk_no);
 
 int biza_do_gc_on_drive(struct biza_target *bt, uint8_t drive);
 

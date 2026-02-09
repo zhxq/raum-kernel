@@ -320,7 +320,7 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 	// unsigned long flags;
 	int i;
 
-	log("Data update lcn: 0x%llx, pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
+	log("Data update lcn 0x%llx, pcn 0x%llx, stripe_no 0x%llx, slot %u, in_raum %d\n",
 	    lcn, pcn, no, slot, in_raum);
 
 	org_pcn = bt->map->l2p[lcn].chunk_no;
@@ -450,7 +450,7 @@ void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
 	struct biza_stripe *stripe = NULL;
 	sector_t old_pcn;
 
-	log("Parity update pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
+	log("Parity update pcn 0x%llx, stripe_no 0x%llx, slot %u, in_raum %d\n",
 	    pcn, no, slot, in_raum);
 	stripe = xa_load(&bt->map->stripe_table, no);
 	if (!stripe) {

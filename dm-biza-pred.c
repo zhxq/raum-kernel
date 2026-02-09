@@ -486,11 +486,18 @@ inline static void biza_promote_entry(struct biza_target *bt,
 	}
 }
 
+sector_t biza_round_chunk_no(sector_t chunk_no)
+{
+	return (chunk_no / RAUM_BIG_CHUNK_PAGES) * RAUM_BIG_CHUNK_PAGES;
+}
+
 // Update LRU in every write
 void biza_update_pred(struct biza_target *bt, sector_t lcn)
 {
 	struct biza_htable_entry *tb_etr = NULL;
 	struct biza_pred_entry *pred_etr = NULL;
+
+	lcn = biza_round_chunk_no(lcn);
 
 	mutex_lock(&bt->pred_lock);
 	bt->wrt_time++;
@@ -511,6 +518,7 @@ enum biza_aware_type biza_check_aware_type(struct biza_target *bt,
 {
 	struct biza_htable_entry *tb_etr = NULL;
 	struct biza_pred_entry *pred_etr = NULL;
+	hint = biza_round_chunk_no(hint);
 	mutex_lock(&bt->pred_lock);
 	tb_etr = biza_htable_find(bt, hint);
 	pred_etr = tb_etr->pred_entry;
