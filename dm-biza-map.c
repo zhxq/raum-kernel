@@ -320,7 +320,7 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 	// unsigned long flags;
 	int i;
 
-	log("Data update lcn 0x%llx, pcn 0x%llx, stripe_no 0x%llx, slot %u, in_raum %d\n",
+	log("1 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
 	    lcn, pcn, no, slot, in_raum);
 
 	org_pcn = bt->map->l2p[lcn].chunk_no;
@@ -335,6 +335,9 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 	bt->map->p2l[pcn].stripe_no = no;
 	bt->map->p2l[pcn].slot = slot;
 	bt->map->p2l[pcn].in_raum = in_raum;
+
+	log("2 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
+	    lcn, pcn, no, slot, in_raum);
 
 	stripe = xa_load(&bt->map->stripe_table, no);
 	if (!stripe) {
@@ -369,6 +372,8 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 		// All data in original stripe is invalid
 		if (--org_stripe->valid == 0) {
 			if (org_stripe->used == bt->params->k) {
+				log("6 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
+				    lcn, pcn, no, slot, in_raum);
 				for (i = 0; i < bt->params->m; ++i) {
 					org_parity_pcn =
 						org_stripe->parity_pcns[i];
@@ -397,47 +402,6 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 							.nr_invalid_chunks++;
 					}
 				}
-
-				// pr_err("freeing stripe: 0x%llx\n", org_stripe_no);
-				dev = &bt->raum_devs[org_drive_idx];
-
-				org_raum_stripe_data = xa_load(&bt->raum_parity,
-							       org_stripe_no);
-				// org_raum_stripe_data =
-				// 	biza_raum_lru_htable_find(
-				// 		bt, org_stripe_no, true);
-				if (org_raum_stripe_data) {
-					free_chunk = kzalloc(
-						sizeof(biza_free_raum_chunk_t),
-						GFP_ATOMIC);
-					free_chunk->chunk =
-						org_raum_stripe_data->raum_chunk;
-					// pr_err("Locking drive_idx %u, raum_chunk 0x%llx\n",
-					//        org_drive_idx,
-					//        org_raum_stripe_data->raum_chunk);
-					spin_lock(&dev->lru_list_lock);
-					// pr_err("Locked drive_idx %u, raum_chunk 0x%llx\n",
-					//        org_drive_idx,
-					//        org_raum_stripe_data->raum_chunk);
-
-					list_add_tail(&free_chunk->link,
-						      &dev->free_raum_chunks);
-					list_del(&org_raum_stripe_data->link);
-					xa_erase(&bt->raum_parity,
-						 org_stripe_no);
-
-					// pr_err("Unlocking drive_idx %u, raum_chunk 0x%llx\n",
-					//        org_drive_idx,
-					//        org_raum_stripe_data->raum_chunk);
-					spin_unlock(&dev->lru_list_lock);
-
-					// pr_err("Unlocked drive_idx %u, raum_chunk 0x%llx\n",
-					//        org_drive_idx,
-					//        org_raum_stripe_data->raum_chunk);
-					kfree(org_raum_stripe_data);
-				}
-				xa_erase(&bt->map->stripe_table, org_stripe_no);
-				biza_free_stripe(org_stripe);
 			}
 		}
 	}
@@ -450,8 +414,8 @@ void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
 	struct biza_stripe *stripe = NULL;
 	sector_t old_pcn;
 
-	log("Parity update pcn 0x%llx, stripe_no 0x%llx, slot %u, in_raum %d\n",
-	    pcn, no, slot, in_raum);
+	log("Parity update pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n", pcn,
+	    no, slot, in_raum);
 	stripe = xa_load(&bt->map->stripe_table, no);
 	if (!stripe) {
 		BUG_ON(slot);
