@@ -29,7 +29,7 @@
 #include <linux/compat.h>
 #include <linux/min_heap.h>
 #include <linux/blk-mq.h>
-#define BIZA_LOG_DEBUG 1
+// #define BIZA_LOG_DEBUG 1
 
 #define RAUM_BIG_CHUNK_PAGES 64
 
@@ -223,7 +223,7 @@ struct biza_dev {
 
 typedef struct biza_raum_big_chunk {
 	struct list_head list;
-	struct biza_chunkioctx **ctx;
+	struct biza_chunkioctx *ctx;
 	struct biza_target *bt;
 	sector_t start_sector;
 	sector_t start_pcn;
@@ -235,6 +235,7 @@ typedef struct biza_raum_big_chunk {
 	uint8_t drive_idx;
 	atomic64_t updates_in_flight;
 	atomic64_t flush_in_flight;
+	bool can_be_flushed_to_zone;
 } biza_raum_big_chunk_t;
 
 // RAUM drives
