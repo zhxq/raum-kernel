@@ -91,8 +91,10 @@ void biza_flush_big_chunk(struct biza_target *bt,
 	uint8_t drive_idx = big_chunk->drive_idx;
 	uint32_t zone_idx, i;
 	uint64_t offset;
+	uint64_t stripe_no;
 	bool parity;
 	uint8_t *data_buffer;
+	struct biza_raum_dev *raum_dev = &bt->raum_devs[big_chunk->drive_idx];
 	struct biza_stripe *stripe = NULL;
 	struct biza_chunkioctx *chunkioctx;
 	biza_stripe_head_t *sh;
@@ -110,13 +112,18 @@ void biza_flush_big_chunk(struct biza_target *bt,
 	for (i = 0; i < RAUM_BIG_CHUNK_PAGES; i++) {
 		pcn = append_pcn_base + i;
 		chunkioctx = &big_chunk->ctx[i];
-		// TODO: fix this use-after-free, likely chunkioctx->sh->no
-		stripe = xa_load(&bt->map->stripe_table, chunkioctx->sh->no);
+		pr_err("i %d, chunkioctx 0x%px, sh 0x%px, lcn 0x%llx, pcn 0x%llx\n",
+		       i, chunkioctx, chunkioctx->sh, chunkioctx->lcn,
+		       chunkioctx->pcn);
+
 		parity = chunkioctx->lcn == BIZA_MAP_PARITY;
+
 		if (parity) {
 			if (WRITE_AMP_STAT) {
 				atomic64_inc(&bt->parity_flush);
 			}
+			stripe = xa_load(&bt->map->stripe_table,
+					 chunkioctx->sh->no);
 			old_pcn = stripe->parity_pcns[chunkioctx->slot];
 			bt->map->p2l[pcn].chunk_no = BIZA_MAP_PARITY;
 			bt->map->p2l[pcn].stripe_no = chunkioctx->sh->no;
@@ -145,14 +152,16 @@ void biza_flush_big_chunk(struct biza_target *bt,
 				atomic64_inc(&bt->data_flush);
 			}
 			// Update mapping table for data chunks
-			old_lcn = stripe->data_lcns[chunkioctx->slot];
-			old_pcn = bt->map->l2p[old_lcn].chunk_no;
+			old_lcn = chunkioctx->lcn;
+			old_pcn = chunkioctx->pcn;
 			bt->map->l2p[old_lcn].chunk_no = pcn;
-			bt->map->l2p[old_lcn].stripe_no = chunkioctx->sh->no;
+			bt->map->l2p[old_lcn].stripe_no =
+				bt->map->p2l[old_pcn].stripe_no;
 			bt->map->l2p[old_lcn].slot = chunkioctx->slot;
 			bt->map->l2p[old_lcn].in_raum = false;
 			bt->map->p2l[pcn].chunk_no = old_lcn;
-			bt->map->p2l[pcn].stripe_no = chunkioctx->sh->no;
+			bt->map->p2l[pcn].stripe_no =
+				bt->map->p2l[old_pcn].stripe_no;
 			bt->map->p2l[pcn].slot = chunkioctx->slot;
 			bt->map->p2l[pcn].in_raum = false;
 			bt->map->p2l[old_pcn].chunk_no = BIZA_MAP_INVALID;
@@ -166,6 +175,22 @@ void biza_flush_big_chunk(struct biza_target *bt,
 			biza_mempool_free(&bt->dcpool, data_buffer);
 		}
 	}
+
+	big_chunk->chunk_count = 0;
+	big_chunk->this_write_start_chunk = 0;
+	big_chunk->this_write_chunk_count = 0;
+	big_chunk->this_write_start_sector = big_chunk->start_sector;
+	bio_put(big_chunk->chunkio);
+
+	big_chunk->chunkio =
+		bio_alloc_bioset(GFP_NOIO, RAUM_BIG_CHUNK_PAGES, &bt->bio_set);
+	big_chunk->chunkio->bi_private = big_chunk;
+	big_chunk->chunkio->bi_end_io = biza_bigchunkio_endio;
+	big_chunk->chunkio->bi_iter.bi_sector =
+		big_chunk->this_write_start_sector;
+	bio_set_dev(big_chunk->chunkio, raum_dev->bdev);
+	bio_set_op_attrs(big_chunk->chunkio, REQ_OP_WRITE, 0);
+
 	atomic64_set(&big_chunk->flush_in_flight, 0);
 }
 
@@ -1902,6 +1927,15 @@ void biza_bigchunkio_endio(struct bio *chunkio)
 	     j < big_chunk->this_write_start_chunk +
 			 big_chunk->this_write_chunk_count;
 	     j++) {
+		if (j >= RAUM_BIG_CHUNK_PAGES) {
+			pr_err("OOB this_write_start_chunk 0x%x this_write_chunk_count %u total 0x%x j 0x%x\n",
+			       big_chunk->this_write_start_chunk,
+			       big_chunk->this_write_chunk_count,
+			       big_chunk->this_write_start_chunk +
+				       big_chunk->this_write_chunk_count,
+			       j);
+			BUG_ON(1);
+		}
 		chunkioctx = &big_chunk->ctx[j];
 		if (chunkioctx->type == BIZA_DATA_WRITE ||
 		    chunkioctx->type == BIZA_PARITY_WRITE ||
