@@ -87,7 +87,7 @@ void biza_flush_big_chunk(struct biza_target *bt,
 			  biza_raum_big_chunk_t *big_chunk)
 {
 	sector_t wp, old_pcn, old_lcn, append_pcn_base, pcn, original_pcn,
-		raid_offset;
+		raid_offset = 0;
 	uint8_t drive_idx = big_chunk->drive_idx;
 	uint32_t zone_idx, i;
 	uint64_t offset;
@@ -104,17 +104,26 @@ void biza_flush_big_chunk(struct biza_target *bt,
 	biza_get_write_location(bt, big_chunk->start_pcn, drive_idx, &zone_idx,
 				&offset, size);
 	wp = biza_idx_to_sector(bt, drive_idx, zone_idx, raid_offset, true);
-	pcn = biza_idx_to_pcn(bt, drive_idx, zone_idx, raid_offset);
-	pr_err("Flushing loc: big_chunk start pcn 0x%llx, drive_idx: %u, zone_idx %u, target wp: 0x%llx, size 0x%llx\n",
-	       big_chunk->start_pcn, drive_idx, zone_idx, wp, size);
-	append_pcn_base = biza_flush_raum_area(bt, drive_idx, zone_idx, wp,
-					       size, big_chunk->start_sector);
+	log("Flushing loc: big_chunk start pcn 0x%llx, drive_idx: %u, zone_idx %u, target wp: 0x%llx, size 0x%llx\n",
+	    big_chunk->start_pcn, drive_idx, zone_idx, wp, size);
+	wp = biza_flush_raum_area(bt, drive_idx, zone_idx, wp, size,
+				  big_chunk->start_sector);
+	append_pcn_base = biza_sector_to_pcn(bt, drive_idx, wp);
+	log("Flushed loc: big_chunk start pcn 0x%llx, drive_idx: %u, zone_idx %u, target wp: 0x%llx, size 0x%llx, base 0x%llx\n",
+	    big_chunk->start_pcn, drive_idx, zone_idx, wp, size,
+	    append_pcn_base);
 	for (i = 0; i < RAUM_BIG_CHUNK_PAGES; i++) {
 		pcn = append_pcn_base + i;
+		if (!biza_is_valid_pcn(bt, pcn)) {
+			pr_err("pcn 0x%llx base 0x%llx i %u drive %u zone %u wp 0x%llx\n",
+			       pcn, append_pcn_base, i, drive_idx, zone_idx,
+			       wp);
+			BUG_ON(1);
+		}
 		chunkioctx = &big_chunk->ctx[i];
-		pr_err("i %d, chunkioctx 0x%px, sh 0x%px, lcn 0x%llx, pcn 0x%llx\n",
-		       i, chunkioctx, chunkioctx->sh, chunkioctx->lcn,
-		       chunkioctx->pcn);
+		log("i %d, chunkioctx 0x%px, sh 0x%px, lcn 0x%llx, pcn 0x%llx\n",
+		    i, chunkioctx, chunkioctx->sh, chunkioctx->lcn,
+		    chunkioctx->pcn);
 
 		parity = chunkioctx->lcn == BIZA_MAP_PARITY;
 
@@ -243,6 +252,10 @@ biza_raum_big_chunk_t *biza_get_big_chunk(struct biza_target *bt,
 			log("Full bigchunk drive %u start_pcn 0x%llx\n",
 			    drive_idx, big_chunk->start_pcn);
 			while (atomic64_read(&big_chunk->updates_in_flight)) {
+				pr_err("Drive %u big_chunk update in flight, val %llu\n",
+				       drive_idx,
+				       atomic64_read(
+					       &big_chunk->updates_in_flight));
 				cpu_relax();
 			}
 
@@ -253,7 +266,7 @@ biza_raum_big_chunk_t *biza_get_big_chunk(struct biza_target *bt,
 		// Give others a chance to put in something back to the big chunk list
 		spin_unlock_irqrestore(&raum_dev->lru_list_lock, flags);
 		cpu_relax();
-		log("Drive %u no bigchunk available\n", drive_idx);
+		pr_err("Drive %u no bigchunk available\n", drive_idx);
 		continue;
 	}
 }
@@ -1234,6 +1247,8 @@ static int biza_compute_parity(struct biza_target *bt, struct bio *bio,
 	void **chunks = kzalloc(
 		(chunk_cnt + bt->params->m) * sizeof(uint64_t *), GFP_KERNEL);
 	uint8_t *bvec_start, *data_start;
+	struct bvec_iter iter;
+	struct bio_vec bvec;
 	int i = 0, this_cnt = 0, src_off = 0;
 
 	if (bt->params->m != 1) {
@@ -1241,8 +1256,13 @@ static int biza_compute_parity(struct biza_target *bt, struct bio *bio,
 		return -EDOM;
 	}
 
-	bvec_start = bvec_kmap_local(&bio->bi_io_vec[0]);
-	data_start = bvec_start + bio->bi_iter.bi_bvec_done;
+	// bvec_start = bvec_kmap_local(&bio->bi_io_vec[0]);
+	// data_start = bvec_start + bio->bi_iter.bi_bvec_done;
+
+	iter = bio->bi_iter;
+	bvec = bio_iter_iovec(bio, iter);
+	data_start = bvec_start = bvec_kmap_local(&bvec);
+
 	for (i = 0; i < chunk_cnt; ++i) {
 		chunks[i] = data_start + i * bt->params->chunk_size_byte;
 	}
@@ -1358,8 +1378,9 @@ static inline bool biza_allocate_wp(struct biza_target *bt, uint8_t drive_idx,
 		dev->open_zones[oz_idx] = biza_open_empty_zone(
 			bt, dev, true,
 			biza_oz_idx_to_aware_type(bt, drive_idx, oz_idx));
-		pr_err("drive_idx %u, oz_idx %u open new zone %u\n", drive_idx,
-		       oz_idx, dev->open_zones[oz_idx]);
+		pr_err("drive_idx %u, oz_idx %u open new zone %u/%u\n",
+		       drive_idx, oz_idx, dev->open_zones[oz_idx],
+		       dev->nr_zones);
 
 		if (dev->open_zones[oz_idx] == dev->nr_zones)
 			BUG_ON(1);
@@ -1618,7 +1639,8 @@ biza_raum_big_chunk_t *biza_find_big_chunk_by_pcn(struct biza_target *bt,
 
 // Prepare for in-place updates
 // Set up in-flight status
-static bool biza_prep_in_place_pcn_update(struct biza_target *bt, uint64_t pcn)
+static bool biza_prep_in_place_pcn_update(struct biza_target *bt, uint64_t pcn,
+					  bool parity)
 {
 	uint8_t drive_idx;
 	sector_t offset;
@@ -1636,6 +1658,10 @@ static bool biza_prep_in_place_pcn_update(struct biza_target *bt, uint64_t pcn)
 			return false;
 		}
 		atomic64_inc(&big_chunk->updates_in_flight);
+		log("big_chunk 0x%px pcn 0x%llx in flight++, now 0x%llx, parity %s\n",
+		    big_chunk, pcn,
+		    atomic64_read(&big_chunk->updates_in_flight),
+		    parity ? "true" : "false");
 		spin_unlock_irqrestore(&raum_dev->lru_list_lock, flags);
 		return true;
 	}
@@ -1647,7 +1673,7 @@ static bool biza_can_raum_data_update_in_place(struct biza_target *bt,
 					       uint64_t lcn)
 {
 	sector_t pcn = bt->map->l2p[lcn].chunk_no;
-	return biza_prep_in_place_pcn_update(bt, pcn);
+	return biza_prep_in_place_pcn_update(bt, pcn, false);
 }
 
 // can the parity be updated in place?
@@ -1659,7 +1685,7 @@ static bool biza_can_raum_parity_update_in_place(struct biza_target *bt,
 	if (!stripe)
 		return false;
 	pcn = stripe->parity_pcns[slot];
-	return biza_prep_in_place_pcn_update(bt, pcn);
+	return biza_prep_in_place_pcn_update(bt, pcn, true);
 }
 
 // pin the zrwa (data and parities) for date update in place & get sh
@@ -1879,6 +1905,10 @@ void biza_chunkio_endio(struct bio *chunkio)
 			&bt->raum_devs[chunkioctx->drive_idx].big_chunk_list,
 			biza_round_chunk_no(chunkioctx->pcn));
 		atomic64_dec(&big_chunk->updates_in_flight);
+		log("big_chunk 0x%px pcn 0x%llx in flight--, now 0x%llx, parity %s\n",
+		    big_chunk, chunkioctx->pcn,
+		    atomic64_read(&big_chunk->updates_in_flight),
+		    chunkioctx->lcn == BIZA_MAP_PARITY ? "true" : "false");
 
 		lcn = chunkioctx->lcn;
 
@@ -2460,6 +2490,8 @@ static int biza_handle_data_in_place_update(struct biza_target *bt,
 	sector_t lcn, pcn;
 	uint8_t *org_data, *bvec_start;
 	int ret;
+	struct bvec_iter iter;
+	struct bio_vec bvec;
 
 	lcn = bio->bi_iter.bi_sector >> bt->params->chunk_size_sector_shift;
 	pcn = biza_map_lcn_lookup_pcn(bt, lcn);
@@ -2483,13 +2515,20 @@ static int biza_handle_data_in_place_update(struct biza_target *bt,
 	xor_blocks(1, bt->params->chunk_size_byte, sh->parity_cache, srcs);
 
 	// compute D^ + D' = P'
-	bvec_start = bvec_kmap_local(&bio->bi_io_vec[0]);
-	srcs[0] = bvec_start + bio->bi_iter.bi_bvec_done;
+	iter = bio->bi_iter;
+	bvec = bio_iter_iovec(bio, iter);
+	bvec_start = bvec_kmap_local(&bvec);
+	srcs[0] = bvec_start;
 	xor_blocks(1, bt->params->chunk_size_byte, sh->parity_cache, srcs);
+	// bvec_start = bvec_kmap_local(&bio->bi_io_vec[0]);
+	// srcs[0] = bvec_start + bio->bi_iter.bi_bvec_done;
+	// xor_blocks(1, bt->params->chunk_size_byte, sh->parity_cache, srcs);
 
 	// update data_buffer
-	memcpy(org_data, srcs[0], bt->params->chunk_size_byte);
+	memcpy(org_data, bvec_start, bt->params->chunk_size_byte);
 	kunmap_local(bvec_start);
+	// memcpy(org_data, srcs[0], bt->params->chunk_size_byte);
+	// kunmap_local(bvec_start);
 
 	kfree(srcs);
 
@@ -2547,7 +2586,8 @@ static int biza_handle_write(struct biza_target *bt, struct bio *bio)
 
 		if (biza_flush_lcn == cur_lcn ||
 		    biza_can_raum_data_update_in_place(bt, cur_lcn)) {
-			log("In-place update lcn 0x%llx\n", cur_lcn);
+			log("performing In-place update lcn 0x%llx, pcn 0x%llx\n",
+			    cur_lcn, bt->map->l2p[cur_lcn].chunk_no);
 			sh = biza_data_update_get_sh(bt, cur_lcn);
 			if (sh) {
 				log("Found sh!!!\n");
@@ -2558,18 +2598,24 @@ static int biza_handle_write(struct biza_target *bt, struct bio *bio)
 				left = bio_sectors(bio) >>
 				       bt->params->chunk_size_sector_shift;
 				continue;
+			} else {
+				biza_flush_lcn = cur_lcn;
+				log("sh not found\n");
 			}
 		}
 		chunk_cnt = 0;
 
 		// while (chunk_cnt < left && chunk_cnt < bt->params->k) {
 		while (chunk_cnt < left && chunk_cnt < bt->params->k) {
-			if (!biza_can_raum_data_update_in_place(bt, cur_lcn)) {
-				cur_lcn++;
-				chunk_cnt++;
-			} else {
+			if (biza_flush_lcn == cur_lcn ||
+			    biza_can_raum_data_update_in_place(bt, cur_lcn)) {
+				log("Setting up In-place update lcn 0x%llx\n",
+				    cur_lcn);
 				biza_flush_lcn = cur_lcn;
 				break;
+			} else {
+				cur_lcn++;
+				chunk_cnt++;
 			}
 		}
 
