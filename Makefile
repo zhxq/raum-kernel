@@ -8,9 +8,9 @@ obj-m += $(MOD_NAME).o
 $(MOD_NAME)-y := dm-biza-target.o dm-biza-pred.o dm-biza-map.o dm-biza-gc.o
 
 # Path to the currently running kernel's build directory
-KDIR := /lib/modules/5.15.0+/build
+KDIR := /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)
-DEST := /lib/modules/5.15.0+/kernel/drivers/md/
+DEST := /lib/modules/$(shell uname -r)/kernel/drivers/md/
 
 EXTRA_CFLAGS += -g -DDEBUG
 
