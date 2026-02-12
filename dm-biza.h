@@ -222,6 +222,7 @@ struct biza_dev {
 // };
 
 typedef struct biza_raum_big_chunk {
+	struct work_struct work;
 	struct list_head list;
 	struct biza_chunkioctx *ctx;
 	struct biza_target *bt;
@@ -442,6 +443,8 @@ struct biza_target {
 	// Queue for biza target
 	struct radix_tree_root io_rxtree;
 	struct workqueue_struct *iowq; // work queue
+	struct workqueue_struct *end_iowq; // work queue
+	struct workqueue_struct *end_bigchunk_iowq; // work queue
 	struct mutex io_lock;
 
 	// mapping tables

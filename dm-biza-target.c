@@ -126,16 +126,15 @@ void biza_flush_big_chunk(struct biza_target *bt,
 		    chunkioctx->pcn);
 
 		parity = chunkioctx->lcn == BIZA_MAP_PARITY;
-
+		old_pcn = chunkioctx->pcn;
 		if (parity) {
 			if (WRITE_AMP_STAT) {
 				atomic64_inc(&bt->parity_flush);
 			}
-			stripe = xa_load(&bt->map->stripe_table,
-					 chunkioctx->sh->no);
-			old_pcn = stripe->parity_pcns[chunkioctx->slot];
+			stripe_no = bt->map->p2l[old_pcn].stripe_no;
+			stripe = xa_load(&bt->map->stripe_table, stripe_no);
 			bt->map->p2l[pcn].chunk_no = BIZA_MAP_PARITY;
-			bt->map->p2l[pcn].stripe_no = chunkioctx->sh->no;
+			bt->map->p2l[pcn].stripe_no = stripe_no;
 			bt->map->p2l[pcn].slot = chunkioctx->slot;
 			bt->map->p2l[pcn].in_raum = false;
 			if (old_pcn != BIZA_MAP_INVALID &&
@@ -149,11 +148,11 @@ void biza_flush_big_chunk(struct biza_target *bt,
 				bt->map->p2l[old_pcn].in_raum = false;
 			}
 			stripe->parity_pcns[chunkioctx->slot] = pcn;
-			sh = xa_load(&bt->fshc, chunkioctx->sh->no);
+			sh = xa_load(&bt->fshc, stripe_no);
 			// pr_err("pcn 0x%llx sh 0x%px\n", pcn, sh);
 			if (sh) {
 				// pr_err("!!Free parity buffer, pcn=0x%llx, sh->parity_cache=0x%px\n", pcn, sh->parity_cache);
-				xa_erase(&bt->fshc, chunkioctx->sh->no);
+				xa_erase(&bt->fshc, stripe_no);
 				biza_free_stripe_head(bt, sh);
 			}
 		} else {
@@ -162,7 +161,6 @@ void biza_flush_big_chunk(struct biza_target *bt,
 			}
 			// Update mapping table for data chunks
 			old_lcn = chunkioctx->lcn;
-			old_pcn = chunkioctx->pcn;
 			bt->map->l2p[old_lcn].chunk_no = pcn;
 			bt->map->l2p[old_lcn].stripe_no =
 				bt->map->p2l[old_pcn].stripe_no;
@@ -1012,6 +1010,24 @@ static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 				   NUM_SUBMIT_WORKER);
 	if (!bt->iowq) {
 		ti->error = "Failed to create io workqueue";
+		ret = -ENOMEM;
+		goto err_map;
+	}
+
+	bt->end_iowq = alloc_workqueue("biza_end_iowq",
+				       WQ_MEM_RECLAIM | WQ_UNBOUND,
+				       NUM_SUBMIT_WORKER);
+	if (!bt->end_iowq) {
+		ti->error = "Failed to create end io workqueue";
+		ret = -ENOMEM;
+		goto err_map;
+	}
+
+	bt->end_bigchunk_iowq = alloc_workqueue("biza_end_bigchunk_iowq",
+						WQ_MEM_RECLAIM | WQ_UNBOUND,
+						NUM_SUBMIT_WORKER);
+	if (!bt->end_bigchunk_iowq) {
+		ti->error = "Failed to create end bigchunk io workqueue";
 		ret = -ENOMEM;
 		goto err_map;
 	}
@@ -1928,6 +1944,22 @@ void biza_chunkio_endio(struct bio *chunkio)
 		BUG_ON(1);
 }
 
+void biza_chunkio_endio_work(struct work_struct *work)
+{
+	// biza_raum_big_chunk_t *big_chunk =
+	// 	container_of(work, biza_raum_big_chunk_t, work);
+	// struct biza_target *bt = big_chunk->bt;
+	// biza_put_big_chunk_back(bt, big_chunk);
+}
+
+void biza_bigchunkio_endio_work(struct work_struct *work)
+{
+	biza_raum_big_chunk_t *big_chunk =
+		container_of(work, biza_raum_big_chunk_t, work);
+	struct biza_target *bt = big_chunk->bt;
+	biza_put_big_chunk_back(bt, big_chunk);
+}
+
 void biza_bigchunkio_endio(struct bio *chunkio)
 {
 	uint32_t i, j;
@@ -2033,7 +2065,8 @@ void biza_bigchunkio_endio(struct bio *chunkio)
 	bio_set_dev(big_chunk->chunkio, raum_dev->bdev);
 	bio_set_op_attrs(big_chunk->chunkio, REQ_OP_WRITE, 0);
 
-	biza_put_big_chunk_back(bt, big_chunk);
+	INIT_WORK(&big_chunk->work, biza_bigchunkio_endio_work);
+	queue_work(bt->end_bigchunk_iowq, &big_chunk->work);
 }
 
 // Send stripe I/O to SSDs
