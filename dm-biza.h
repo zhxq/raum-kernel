@@ -304,6 +304,8 @@ struct biza_nvme_request {
 
 // stripe head (run time) in biza
 typedef struct biza_stripe_head {
+	struct work_struct work;
+	struct biza_target *bt;
 	uint64_t no;
 	uint8_t nr_data_written;
 	uint8_t *parity_cache; // for buffering partial parity

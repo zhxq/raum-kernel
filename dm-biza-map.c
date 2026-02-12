@@ -402,6 +402,8 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 							.nr_invalid_chunks++;
 					}
 				}
+				xa_erase(&bt->map->stripe_table, org_stripe_no);
+				biza_free_stripe(org_stripe);
 			}
 		}
 	}
