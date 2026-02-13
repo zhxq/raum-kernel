@@ -320,8 +320,8 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 	// unsigned long flags;
 	int i;
 
-	log("1 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
-	    lcn, pcn, no, slot, in_raum);
+	// log("1 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
+	//     lcn, pcn, no, slot, in_raum);
 
 	org_pcn = bt->map->l2p[lcn].chunk_no;
 	org_stripe_no = bt->map->l2p[lcn].stripe_no;
@@ -336,8 +336,8 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 	bt->map->p2l[pcn].slot = slot;
 	bt->map->p2l[pcn].in_raum = in_raum;
 
-	log("2 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
-	    lcn, pcn, no, slot, in_raum);
+	// log("2 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
+	//     lcn, pcn, no, slot, in_raum);
 
 	stripe = xa_load(&bt->map->stripe_table, no);
 	if (!stripe) {
@@ -372,8 +372,8 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 		// All data in original stripe is invalid
 		if (--org_stripe->valid == 0) {
 			if (org_stripe->used == bt->params->k) {
-				log("6 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
-				    lcn, pcn, no, slot, in_raum);
+				// log("6 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
+				//     lcn, pcn, no, slot, in_raum);
 				for (i = 0; i < bt->params->m; ++i) {
 					org_parity_pcn =
 						org_stripe->parity_pcns[i];
