@@ -709,7 +709,7 @@ static int biza_init_raum_devs(struct dm_target *ti)
 			atomic64_set(&big_chunk->updates_in_flight, 0);
 			atomic64_set(&big_chunk->flush_in_flight, 0);
 			xa_store_irq(&dev->big_chunk_list, big_chunk->start_pcn,
-				 big_chunk, GFP_KERNEL);
+				     big_chunk, GFP_KERNEL);
 
 			list_add_tail(&big_chunk->list, &dev->free_raum_chunks);
 		}
@@ -1656,11 +1656,11 @@ static bool biza_prep_in_place_pcn_update(struct biza_target *bt, uint64_t pcn,
 			spin_unlock_irqrestore(&raum_dev->lru_list_lock, flags);
 			return false;
 		}
-		// atomic64_inc(&big_chunk->updates_in_flight);
-		// log("big_chunk 0x%px pcn 0x%llx in flight++, now 0x%llx, parity %s\n",
-		//     big_chunk, pcn,
-		//     atomic64_read(&big_chunk->updates_in_flight),
-		//     parity ? "true" : "false");
+		atomic64_inc(&big_chunk->updates_in_flight);
+		log("big_chunk 0x%px pcn 0x%llx in flight++, now 0x%llx, parity %s\n",
+		    big_chunk, pcn,
+		    atomic64_read(&big_chunk->updates_in_flight),
+		    parity ? "true" : "false");
 		spin_unlock_irqrestore(&raum_dev->lru_list_lock, flags);
 		return true;
 	}
@@ -1913,11 +1913,11 @@ void biza_chunkio_endio(struct bio *chunkio)
 		big_chunk = xa_load(
 			&bt->raum_devs[chunkioctx->drive_idx].big_chunk_list,
 			biza_round_chunk_no(chunkioctx->pcn));
-		// atomic64_dec(&big_chunk->updates_in_flight);
-		// log("big_chunk 0x%px pcn 0x%llx in flight--, now 0x%llx, parity %s\n",
-		//     big_chunk, chunkioctx->pcn,
-		//     atomic64_read(&big_chunk->updates_in_flight),
-		//     chunkioctx->lcn == BIZA_MAP_PARITY ? "true" : "false");
+		atomic64_dec(&big_chunk->updates_in_flight);
+		log("big_chunk 0x%px pcn 0x%llx in flight--, now 0x%llx, parity %s\n",
+		    big_chunk, chunkioctx->pcn,
+		    atomic64_read(&big_chunk->updates_in_flight),
+		    chunkioctx->lcn == BIZA_MAP_PARITY ? "true" : "false");
 
 		lcn = chunkioctx->lcn;
 
