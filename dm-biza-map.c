@@ -1,10 +1,12 @@
 #include "dm-biza.h"
 
 // alloc and init a stripe (not stripe head!!!)
-static struct biza_stripe *biza_alloc_stripe(struct biza_target *bt)
+static struct biza_stripe *biza_alloc_stripe(struct biza_target *bt,
+					     bool larger_chunk)
 {
 	struct biza_stripe *stripe = NULL;
-	int i;
+	int i, j;
+	int num_chunks = larger_chunk ? RAUM_LARGER_CHUNK_PAGES : 1;
 
 	stripe = kzalloc(sizeof(struct biza_stripe), GFP_ATOMIC);
 	if (!stripe)
@@ -17,17 +19,38 @@ static struct biza_stripe *biza_alloc_stripe(struct biza_target *bt)
 	for (i = 0; i < bt->params->m; ++i) {
 		stripe->parity_pcns[i] = BIZA_MAP_UNMAPPED;
 	}
+	// stripe->parity_pcns =
+	// 	kvzalloc(bt->params->m * sizeof(sector_t *), GFP_ATOMIC);
+	// if (!stripe->parity_pcns)
+	// 	goto err_stripe;
+	// for (i = 0; i < bt->params->m; ++i) {
+	// 	stripe->parity_pcns[i] =
+	// 		kvzalloc(num_chunks * sizeof(sector_t), GFP_ATOMIC);
+	// 	for (j = 0; j < num_chunks; j++) {
+	// 		stripe->parity_pcns[i][j] = BIZA_MAP_UNMAPPED;
+	// 	}
+	// }
 
 	stripe->data_lcns =
 		kvzalloc(bt->params->k * sizeof(sector_t), GFP_ATOMIC);
 	if (!stripe->data_lcns)
 		goto err_parity;
-	for (i = 0; i < bt->params->k; ++i) {
-		stripe->data_lcns[i] = BIZA_MAP_UNMAPPED;
-	}
+
+	// for (i = 0; i < bt->params->k; ++i) {
+	// 	stripe->data_lcns[i] =
+	// 		kvzalloc(num_chunks * sizeof(sector_t), GFP_ATOMIC);
+	// 	for (j = 0; j < num_chunks; j++) {
+	// 		stripe->data_lcns[i][j] = BIZA_MAP_UNMAPPED;
+	// 	}
+	// 	if (!stripe->data_lcns[i]) {
+	// 		BUG_ON(1);
+	// 		goto err_parity;
+	// 	}
+	// }
 
 	stripe->used = 0;
 	stripe->valid = 0;
+	stripe->larger_chunk = larger_chunk;
 
 	return stripe;
 
@@ -40,8 +63,12 @@ err:
 }
 
 // free a stripe (not stripe head!!!)
-static void biza_free_stripe(struct biza_stripe *stripe)
+static void biza_free_stripe(struct biza_target *bt, struct biza_stripe *stripe)
 {
+	int i = 0;
+	// for (i = 0; i < bt->params->k; i++) {
+	// 	kvfree(stripe->data_lcns[i]);
+	// }
 	kvfree(stripe->data_lcns);
 	kvfree(stripe->parity_pcns);
 	kfree(stripe);
@@ -304,7 +331,7 @@ inline bool biza_map_is_data_in_pcn_useful(struct biza_target *bt, sector_t pcn)
 // update mapping tables because of data write/out-of-place update
 void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 			      sector_t pcn, uint64_t no, uint8_t slot,
-			      bool in_raum)
+			      bool in_raum, bool larger_chunk)
 {
 	sector_t org_pcn = BIZA_MAP_UNMAPPED;
 	uint64_t org_stripe_no = BIZA_MAP_UNMAPPED;
@@ -318,92 +345,104 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 	struct biza_raum_location_entry *org_raum_stripe_data;
 	struct biza_raum_dev *dev;
 	// unsigned long flags;
-	int i;
+	int i = 0, j = 0, max_i = larger_chunk ? RAUM_LARGER_CHUNK_PAGES : 1;
 
 	// log("1 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
 	//     lcn, pcn, no, slot, in_raum);
 
-	org_pcn = bt->map->l2p[lcn].chunk_no;
-	org_stripe_no = bt->map->l2p[lcn].stripe_no;
-	org_slot = bt->map->l2p[lcn].slot;
-
-	bt->map->l2p[lcn].chunk_no = pcn;
-	bt->map->l2p[lcn].stripe_no = no;
-	bt->map->l2p[lcn].slot = slot;
-	bt->map->l2p[lcn].in_raum = in_raum;
-	bt->map->p2l[pcn].chunk_no = lcn;
-	bt->map->p2l[pcn].stripe_no = no;
-	bt->map->p2l[pcn].slot = slot;
-	bt->map->p2l[pcn].in_raum = in_raum;
-
-	// log("2 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
-	//     lcn, pcn, no, slot, in_raum);
-
 	stripe = xa_load(&bt->map->stripe_table, no);
 	if (!stripe) {
-		stripe = biza_alloc_stripe(bt);
+		stripe = biza_alloc_stripe(bt, larger_chunk);
 		xa_store(&bt->map->stripe_table, no, stripe, GFP_ATOMIC);
 		// pr_err("data creating stripe: 0x%llx\n", no);
 	}
-	stripe->data_lcns[slot] = lcn;
 	stripe->used++;
-	stripe->valid++;
+	stripe->larger_chunk = larger_chunk;
 
-	if (org_pcn != BIZA_MAP_UNMAPPED) {
-		bt->map->p2l[org_pcn].chunk_no = BIZA_MAP_INVALID;
-		// DO NOT set stripe_no now, because when gc, we need recompute parity
-		// bt->map->p2l[org_pcn].stripe_no = BIZA_MAP_INVALID;
-		bt->map->p2l[org_pcn].slot = (uint8_t)BIZA_MAP_INVALID;
-		if (!bt->map->p2l[org_pcn].in_raum) {
-			// pr_err("Testing in_raum 1 0x%llx\n", org_pcn);
-			// pr_err("Inif Data update lcn: 0x%llx, pcn: 0x%llx, original_pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
-			//        lcn, org_pcn, pcn, no, slot, in_raum);
-			biza_pcn_to_idx(bt, org_pcn, &org_drive_idx,
-					&org_zone_idx, &org_offset);
-			bt->devs[org_drive_idx]
-				.zones[org_zone_idx]
-				.nr_invalid_chunks++;
-		}
+	for (i = 0; i < max_i; i++) {
+		org_pcn = bt->map->l2p[lcn + i].chunk_no;
+		org_stripe_no = bt->map->l2p[lcn + i].stripe_no;
+		org_slot = bt->map->l2p[lcn + i].slot;
+		bt->map->l2p[lcn + i].chunk_no = pcn + i;
+		bt->map->l2p[lcn + i].stripe_no = no;
+		bt->map->l2p[lcn + i].slot = slot;
+		bt->map->l2p[lcn + i].in_raum = in_raum;
+		bt->map->p2l[pcn + i].chunk_no = lcn + i;
+		bt->map->p2l[pcn + i].stripe_no = no;
+		bt->map->p2l[pcn + i].slot = slot;
+		bt->map->p2l[pcn + i].in_raum = in_raum;
 
-		org_stripe = xa_load(&bt->map->stripe_table, org_stripe_no);
-		BUG_ON(!org_stripe);
-		org_stripe->data_lcns[org_slot] = BIZA_MAP_INVALID;
+		stripe->data_lcns[slot] = lcn;
+		stripe->valid++;
 
-		// All data in original stripe is invalid
-		if (--org_stripe->valid == 0) {
-			if (org_stripe->used == bt->params->k) {
-				// log("6 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
-				//     lcn, pcn, no, slot, in_raum);
-				for (i = 0; i < bt->params->m; ++i) {
-					org_parity_pcn =
-						org_stripe->parity_pcns[i];
-					if (!biza_is_valid_pcn(
-						    bt, org_parity_pcn)) {
-						continue;
-					}
-					bt->map->p2l[org_parity_pcn].chunk_no =
-						BIZA_MAP_INVALID;
-					bt->map->p2l[org_parity_pcn].stripe_no =
-						BIZA_MAP_INVALID;
-					bt->map->p2l[org_parity_pcn].slot =
-						(uint8_t)BIZA_MAP_INVALID;
-					if (!bt->map->p2l[org_parity_pcn]
-						     .in_raum) {
-						// pr_err("Inloop Data update lcn: 0x%llx, pcn: 0x%llx, original_pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
-						//        lcn, org_pcn, pcn, no,
-						//        slot, in_raum);
-						biza_pcn_to_idx(bt,
+		// log("2 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
+		//     lcn, pcn, no, slot, in_raum);
+
+		if (org_pcn != BIZA_MAP_UNMAPPED) {
+			bt->map->p2l[org_pcn].chunk_no = BIZA_MAP_INVALID;
+			// DO NOT set stripe_no now, because when gc, we need recompute parity
+			// bt->map->p2l[org_pcn].stripe_no = BIZA_MAP_INVALID;
+			bt->map->p2l[org_pcn].slot = (uint8_t)BIZA_MAP_INVALID;
+			if (!bt->map->p2l[org_pcn].in_raum) {
+				// pr_err("Testing in_raum 1 0x%llx\n", org_pcn);
+				// pr_err("Inif Data update lcn: 0x%llx, pcn: 0x%llx, original_pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
+				//        lcn, org_pcn, pcn, no, slot, in_raum);
+				biza_pcn_to_idx(bt, org_pcn, &org_drive_idx,
+						&org_zone_idx, &org_offset);
+				bt->devs[org_drive_idx]
+					.zones[org_zone_idx]
+					.nr_invalid_chunks++;
+			}
+
+			org_stripe =
+				xa_load(&bt->map->stripe_table, org_stripe_no);
+			BUG_ON(!org_stripe);
+			org_stripe->data_lcns[org_slot] = BIZA_MAP_INVALID;
+
+			// All data in original stripe is invalid
+			if (--org_stripe->valid == 0) {
+				if (org_stripe->used == bt->params->k) {
+					// log("6 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
+					//     lcn, pcn, no, slot, in_raum);
+					for (j = 0; j < bt->params->m; ++j) {
+						// TODO: need to invalidate several PCN mappings when dealing with larger chunks
+						org_parity_pcn =
+							org_stripe
+								->parity_pcns[j];
+						if (!biza_is_valid_pcn(
+							    bt,
+							    org_parity_pcn)) {
+							continue;
+						}
+						bt->map->p2l[org_parity_pcn]
+							.chunk_no =
+							BIZA_MAP_INVALID;
+						bt->map->p2l[org_parity_pcn]
+							.stripe_no =
+							BIZA_MAP_INVALID;
+						bt->map->p2l[org_parity_pcn]
+							.slot = (uint8_t)
+							BIZA_MAP_INVALID;
+						if (!bt->map->p2l[org_parity_pcn]
+							     .in_raum) {
+							// pr_err("Inloop Data update lcn: 0x%llx, pcn: 0x%llx, original_pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
+							//        lcn, org_pcn, pcn, no,
+							//        slot, in_raum);
+							biza_pcn_to_idx(
+								bt,
 								org_parity_pcn,
 								&org_drive_idx,
 								&org_zone_idx,
 								&org_offset);
-						bt->devs[org_drive_idx]
-							.zones[org_zone_idx]
-							.nr_invalid_chunks++;
+							bt->devs[org_drive_idx]
+								.zones[org_zone_idx]
+								.nr_invalid_chunks++;
+						}
 					}
+					xa_erase(&bt->map->stripe_table,
+						 org_stripe_no);
+					biza_free_stripe(bt, org_stripe);
 				}
-				xa_erase(&bt->map->stripe_table, org_stripe_no);
-				biza_free_stripe(org_stripe);
 			}
 		}
 	}
@@ -411,22 +450,27 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 
 // update mapping tables because of parity write/ out-of-place update
 void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
-				uint64_t no, uint8_t slot, bool in_raum)
+				uint64_t no, uint8_t slot, bool in_raum,
+				bool larger_chunk)
 {
 	struct biza_stripe *stripe = NULL;
-	sector_t old_pcn;
+	sector_t old_pcn, old_data_start_lcn;
+	int subslot;
+
+	// TODO: need to update several PCN mappings when dealing with larger chunks
 
 	log("Parity update pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n", pcn,
 	    no, slot, in_raum);
 	stripe = xa_load(&bt->map->stripe_table, no);
 	if (!stripe) {
 		BUG_ON(slot);
-		stripe = biza_alloc_stripe(bt);
+		stripe = biza_alloc_stripe(bt, larger_chunk);
 		xa_store(&bt->map->stripe_table, no, stripe, GFP_ATOMIC);
 		// pr_err("parity creating stripe: 0x%llx\n", no);
 	} else {
 		// Invalidate old entry
 		old_pcn = stripe->parity_pcns[slot];
+
 		// pr_err("Write parity: original: 0x%llx, new: 0x%llx\n", old_pcn, pcn);
 		if (old_pcn != BIZA_MAP_INVALID &&
 		    old_pcn != BIZA_MAP_UNMAPPED) {

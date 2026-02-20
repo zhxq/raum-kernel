@@ -539,11 +539,18 @@ uint8_t biza_choose_open_zone_to_write(struct biza_target *bt,
 	uint32_t interval;
 	uint8_t ozg_idx, oz_idx;
 
+	enum biza_aware_type aware_type;
+
 	mutex_lock(&bt->pred_lock);
 	tb_etr = biza_htable_find(bt, hint);
-	pred_etr = tb_etr->pred_entry;
+	if (tb_etr) {
+		pred_etr = tb_etr->pred_entry;
+		aware_type = pred_etr->aware_type;
+	} else {
+		aware_type = BIZA_TRIVIAL;
+	}
 
-	switch (pred_etr->aware_type) {
+	switch (aware_type) {
 	case BIZA_ZRWA_AWARE:
 		ozg_idx = (get_random_u32() % dev->nr_zrwa_aware_open_zones) /
 			  BIZA_NR_ISOLATION_DOMAIN;

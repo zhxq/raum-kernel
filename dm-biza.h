@@ -32,6 +32,7 @@
 // #define BIZA_LOG_DEBUG 1
 
 #define RAUM_BIG_CHUNK_PAGES 64
+#define RAUM_LARGER_CHUNK_PAGES 64
 
 /** 0 means max **/
 #define NUM_SUBMIT_WORKER 2
@@ -103,6 +104,10 @@ struct biza_params {
 	uint64_t chunk_size_byte; // in byte
 	sector_t chunk_size_sector; // in sector
 	uint8_t chunk_size_sector_shift; // sector <-> chunk
+
+	uint64_t max_chunk_size_byte; // in byte
+	sector_t max_chunk_size_sector; // in sector
+	uint8_t max_chunk_size_sector_shift; // sector <-> chunk
 
 	// All SSD should be the same
 	uint32_t nr_zones_per_drive;
@@ -309,7 +314,7 @@ typedef struct biza_stripe_head {
 	uint64_t no;
 	uint8_t nr_data_written;
 	uint8_t *parity_cache; // for buffering partial parity
-
+	bool larger_chunk;
 	// ctx of this use
 	struct biza_stripe_head_ioctx *ioctx;
 
@@ -327,6 +332,7 @@ struct biza_stripe {
 	sector_t *data_lcns; // for p2l map
 	uint8_t used;
 	uint8_t valid;
+	bool larger_chunk;
 };
 
 // biza addr for mapping tables
@@ -465,6 +471,7 @@ struct biza_target {
 	struct xarray raum_parity; // parity chunks in RAUM
 	struct biza_mempool dcpool;
 	struct biza_mempool pcpool;
+	struct biza_mempool largepcpool;
 
 	// data feature prediction for GC reduction
 	struct biza_lru *
@@ -513,6 +520,7 @@ struct biza_chunkioctx {
 	struct biza_target *bt;
 	sector_t lcn;
 	sector_t pcn;
+	sector_t parity_start_data_lcn;
 	uint8_t slot;
 	uint8_t drive_idx;
 	bool in_raum;
@@ -592,9 +600,10 @@ inline bool biza_map_is_data_in_pcn_useful(struct biza_target *bt,
 					   sector_t pcn);
 void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 			      sector_t pcn, uint64_t no, uint8_t slot,
-			      bool in_raum);
+			      bool in_raum, bool larger_chunk);
 void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
-				uint64_t no, uint8_t slot, bool in_raum);
+				uint64_t no, uint8_t slot, bool in_raum,
+				bool larger_chunk);
 void biza_map_remap(struct biza_target *bt, sector_t src_pcn, sector_t dst_pcn);
 
 /** Functions defined in dm-biza-ds.c **/
