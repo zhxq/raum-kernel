@@ -345,7 +345,9 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 	struct biza_raum_location_entry *org_raum_stripe_data;
 	struct biza_raum_dev *dev;
 	// unsigned long flags;
-	int i = 0, j = 0, max_i = larger_chunk ? RAUM_LARGER_CHUNK_PAGES : 1;
+	int i = 0, j = 0, k = 0,
+	    max_i = larger_chunk ? RAUM_LARGER_CHUNK_PAGES : 1;
+	int original_stripe_max_i = 1;
 
 	// log("1 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
 	//     lcn, pcn, no, slot, in_raum);
@@ -428,15 +430,26 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 							// pr_err("Inloop Data update lcn: 0x%llx, pcn: 0x%llx, original_pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
 							//        lcn, org_pcn, pcn, no,
 							//        slot, in_raum);
-							biza_pcn_to_idx(
-								bt,
-								org_parity_pcn,
-								&org_drive_idx,
-								&org_zone_idx,
-								&org_offset);
-							bt->devs[org_drive_idx]
-								.zones[org_zone_idx]
-								.nr_invalid_chunks++;
+							if (org_stripe
+								    ->larger_chunk) {
+								original_stripe_max_i =
+									RAUM_LARGER_CHUNK_PAGES;
+							}
+							for (k = 0;
+							     k <
+							     original_stripe_max_i;
+							     k++) {
+								biza_pcn_to_idx(
+									bt,
+									org_parity_pcn +
+										k,
+									&org_drive_idx,
+									&org_zone_idx,
+									&org_offset);
+								bt->devs[org_drive_idx]
+									.zones[org_zone_idx]
+									.nr_invalid_chunks++;
+							}
 						}
 					}
 					xa_erase(&bt->map->stripe_table,
