@@ -2983,10 +2983,12 @@ static int biza_submit_chunk_read(struct biza_target *bt, struct bio *bio,
 static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 {
 	sector_t cur_sec, nxt_sec, size, left;
-	sector_t lcn, pcn;
+	sector_t lcn, pcn, temp_lcn, temp_pcn;
 	int ret;
+	int i;
 
 	left = bio_sectors(bio);
+	// pr_err("Got read: 0x%llx %llu sectors\n", left, left);
 
 	while (left > 0) {
 		cur_sec = bio->bi_iter.bi_sector;
@@ -2998,6 +3000,33 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 
 		lcn = cur_sec >> bt->params->chunk_size_sector_shift;
 		pcn = biza_map_lcn_lookup_pcn(bt, lcn);
+
+		for (i = 1;; i++) {
+			temp_lcn = lcn + i;
+			if (temp_lcn >= bt->params->nr_chunks) {
+				// pr_err("temp_lcn OOB!\n");
+				break;
+			}
+			temp_pcn = biza_map_lcn_lookup_pcn(bt, temp_lcn);
+			if (pcn + i == temp_pcn ||
+			    ((pcn == BIZA_MAP_UNMAPPED ||
+			      pcn == BIZA_MAP_INVALID) &&
+			     (temp_pcn == BIZA_MAP_UNMAPPED ||
+			      temp_pcn == BIZA_MAP_INVALID))) {
+				// if (pcn + i == temp_pcn) {
+				// pr_err("size: 0x%llx, %llu, left_size: 0x%llx, %llu\n",
+				//        size, size, left << SECTOR_SHIFT,
+				//        left << SECTOR_SHIFT);
+				if (size + (bt->params->chunk_size_byte) >
+				    left << SECTOR_SHIFT) {
+					break;
+				}
+				// pr_err("Got coalesced!\n");
+				size += bt->params->chunk_size_byte;
+			} else {
+				break;
+			}
+		}
 
 		ret = biza_submit_chunk_read(bt, bio, lcn, pcn, size);
 		if (ret) {
