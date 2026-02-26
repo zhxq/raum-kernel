@@ -2,11 +2,11 @@
 
 // alloc and init a stripe (not stripe head!!!)
 static struct biza_stripe *biza_alloc_stripe(struct biza_target *bt,
-					     bool larger_chunk)
+					     uint64_t chunks_in_shard)
 {
 	struct biza_stripe *stripe = NULL;
 	int i, j;
-	int num_chunks = larger_chunk ? RAUM_LARGER_CHUNK_PAGES : 1;
+	int num_chunks = chunks_in_shard;
 
 	stripe = kzalloc(sizeof(struct biza_stripe), GFP_ATOMIC);
 	if (!stripe)
@@ -50,7 +50,7 @@ static struct biza_stripe *biza_alloc_stripe(struct biza_target *bt,
 
 	stripe->used = 0;
 	stripe->valid = 0;
-	stripe->larger_chunk = larger_chunk;
+	stripe->chunks_in_shard = chunks_in_shard;
 
 	return stripe;
 
@@ -331,7 +331,7 @@ inline bool biza_map_is_data_in_pcn_useful(struct biza_target *bt, sector_t pcn)
 // update mapping tables because of data write/out-of-place update
 void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 			      sector_t pcn, uint64_t no, uint8_t slot,
-			      bool in_raum, bool larger_chunk)
+			      bool in_raum, uint64_t chunks_in_shard)
 {
 	sector_t org_pcn = BIZA_MAP_UNMAPPED;
 	uint64_t org_stripe_no = BIZA_MAP_UNMAPPED;
@@ -345,8 +345,7 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 	struct biza_raum_location_entry *org_raum_stripe_data;
 	struct biza_raum_dev *dev;
 	// unsigned long flags;
-	int i = 0, j = 0, k = 0,
-	    max_i = larger_chunk ? RAUM_LARGER_CHUNK_PAGES : 1;
+	int i = 0, j = 0, k = 0, max_i = chunks_in_shard;
 	int original_stripe_max_i = 1;
 
 	// log("1 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
@@ -354,12 +353,12 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 
 	stripe = xa_load(&bt->map->stripe_table, no);
 	if (!stripe) {
-		stripe = biza_alloc_stripe(bt, larger_chunk);
+		stripe = biza_alloc_stripe(bt, chunks_in_shard);
 		xa_store(&bt->map->stripe_table, no, stripe, GFP_ATOMIC);
 		// pr_err("data creating stripe: 0x%llx\n", no);
 	}
 	stripe->used++;
-	stripe->larger_chunk = larger_chunk;
+	stripe->chunks_in_shard = chunks_in_shard;
 
 	for (i = 0; i < max_i; i++) {
 		org_pcn = bt->map->l2p[lcn + i].chunk_no;
@@ -430,11 +429,9 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 							// pr_err("Inloop Data update lcn: 0x%llx, pcn: 0x%llx, original_pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
 							//        lcn, org_pcn, pcn, no,
 							//        slot, in_raum);
-							if (org_stripe
-								    ->larger_chunk) {
-								original_stripe_max_i =
-									RAUM_LARGER_CHUNK_PAGES;
-							}
+							original_stripe_max_i =
+								org_stripe
+									->chunks_in_shard;
 							for (k = 0;
 							     k <
 							     original_stripe_max_i;
@@ -464,7 +461,7 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 // update mapping tables because of parity write/ out-of-place update
 void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
 				uint64_t no, uint8_t slot, bool in_raum,
-				bool larger_chunk)
+				uint64_t chunks_in_shard)
 {
 	struct biza_stripe *stripe = NULL;
 	sector_t old_pcn, old_data_start_lcn;
@@ -477,7 +474,7 @@ void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
 	stripe = xa_load(&bt->map->stripe_table, no);
 	if (!stripe) {
 		BUG_ON(slot);
-		stripe = biza_alloc_stripe(bt, larger_chunk);
+		stripe = biza_alloc_stripe(bt, chunks_in_shard);
 		xa_store(&bt->map->stripe_table, no, stripe, GFP_ATOMIC);
 		// pr_err("parity creating stripe: 0x%llx\n", no);
 	} else {

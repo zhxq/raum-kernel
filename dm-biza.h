@@ -314,7 +314,7 @@ typedef struct biza_stripe_head {
 	uint64_t no;
 	uint8_t nr_data_written;
 	uint8_t *parity_cache; // for buffering partial parity
-	bool larger_chunk;
+	uint64_t chunks_in_shard;
 	// ctx of this use
 	struct biza_stripe_head_ioctx *ioctx;
 
@@ -332,7 +332,7 @@ struct biza_stripe {
 	sector_t *data_lcns; // for p2l map
 	uint8_t used;
 	uint8_t valid;
-	bool larger_chunk;
+	uint64_t chunks_in_shard;
 };
 
 // biza addr for mapping tables
@@ -471,7 +471,12 @@ struct biza_target {
 	struct xarray raum_parity; // parity chunks in RAUM
 	struct biza_mempool dcpool;
 	struct biza_mempool pcpool;
-	struct biza_mempool largepcpool;
+	struct biza_mempool largepcpool64;
+	struct biza_mempool largepcpool32;
+	struct biza_mempool largepcpool16;
+	struct biza_mempool largepcpool8;
+	struct biza_mempool largepcpool4;
+	struct biza_mempool largepcpool2;
 
 	// data feature prediction for GC reduction
 	struct biza_lru *
@@ -600,10 +605,10 @@ inline bool biza_map_is_data_in_pcn_useful(struct biza_target *bt,
 					   sector_t pcn);
 void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 			      sector_t pcn, uint64_t no, uint8_t slot,
-			      bool in_raum, bool larger_chunk);
+			      bool in_raum, uint64_t chunks_in_shard);
 void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
 				uint64_t no, uint8_t slot, bool in_raum,
-				bool larger_chunk);
+				uint64_t chunks_in_shard);
 void biza_map_remap(struct biza_target *bt, sector_t src_pcn, sector_t dst_pcn);
 
 /** Functions defined in dm-biza-ds.c **/
