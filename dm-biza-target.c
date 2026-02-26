@@ -2893,32 +2893,32 @@ static int biza_handle_write(struct biza_target *bt, struct bio *bio)
 
 	// Try to get some larger chunks directly written to Zones
 
-	// for (shift = bt->params->max_chunk_size_sector_shift;
-	//      shift > bt->params->chunk_size_sector_shift; shift--) {
-	// 	original_left = left = bio_sectors(bio) >> shift;
-	// 	chunks = RAUM_LARGER_CHUNK_PAGES >>
-	// 		 (bt->params->max_chunk_size_sector_shift - shift);
-	// 	log("Left: %llu large chunks, trying %llu chunks\n", left,
-	// 	    chunks);
+	for (shift = bt->params->max_chunk_size_sector_shift;
+	     shift > bt->params->chunk_size_sector_shift; shift--) {
+		original_left = left = bio_sectors(bio) >> shift;
+		chunks = RAUM_LARGER_CHUNK_PAGES >>
+			 (bt->params->max_chunk_size_sector_shift - shift);
+		log("Left: %llu large chunks, trying %llu chunks\n", left,
+		    chunks);
 
-	// 	while (left >= bt->params->k) {
-	// 		// cur_lcn = bio->bi_iter.bi_sector >>
-	// 		// 	  bt->params->chunk_size_sector_shift;
-	// 		// for (i = 0; i < bt->params->k * RAUM_LARGER_CHUNK_PAGES; i++) {
-	// 		// 	pcn = bt->map->l2p[cur_lcn].chunk_no;
-	// 		// 	if (biza_check_pcn_in_raum(bt, pcn)) {
-	// 		// 		goto out;
-	// 		// 	}
-	// 		// }
+		while (left >= bt->params->k) {
+			// cur_lcn = bio->bi_iter.bi_sector >>
+			// 	  bt->params->chunk_size_sector_shift;
+			// for (i = 0; i < bt->params->k * RAUM_LARGER_CHUNK_PAGES; i++) {
+			// 	pcn = bt->map->l2p[cur_lcn].chunk_no;
+			// 	if (biza_check_pcn_in_raum(bt, pcn)) {
+			// 		goto out;
+			// 	}
+			// }
 
-	// 		ret = biza_handle_full_stripe_write(bt, bio, big_chunks,
-	// 						    chunks);
-	// 		if (ret)
-	// 			return -EIO;
+			ret = biza_handle_full_stripe_write(bt, bio, big_chunks,
+							    chunks);
+			if (ret)
+				return -EIO;
 
-	// 		left = bio_sectors(bio) >> shift;
-	// 	}
-	// }
+			left = bio_sectors(bio) >> shift;
+		}
+	}
 
 	left = bio_sectors(bio) >> bt->params->chunk_size_sector_shift;
 	log("Left: %llu small chunks\n", left);
