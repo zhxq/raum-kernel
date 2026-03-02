@@ -364,7 +364,7 @@ int biza_ctr_map(struct biza_target *bt)
 		ret = -ENOMEM;
     }
 
-    bt->map->l2p = kvmalloc_array(bt->params->nr_chunks, sizeof(biza_addr_t), GFP_KERNEL);
+    bt->map->l2p = vmalloc(bt->params->nr_chunks * sizeof(biza_addr_t));
     if (!bt->map->l2p) {
         pr_err("dm-biza: Failed to allocate l2p map\n");
 		ret = -ENOMEM;
@@ -372,7 +372,7 @@ int biza_ctr_map(struct biza_target *bt)
     }
     memset(bt->map->l2p, (uint8_t)BIZA_MAP_UNMAPPED, bt->params->nr_chunks * sizeof(biza_addr_t));
 
-    bt->map->p2l = kvmalloc_array(bt->params->nr_internal_chunks, sizeof(biza_addr_t), GFP_KERNEL);
+    bt->map->p2l = vmalloc(bt->params->nr_internal_chunks * sizeof(biza_addr_t));
     if (!bt->map->p2l) {
         pr_err("dm-biza: Failed to allocate p2l map\n");
 		ret = -ENOMEM;
