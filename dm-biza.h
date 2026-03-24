@@ -27,6 +27,7 @@
 #include <linux/nvme_ioctl.h>
 #include <linux/random.h>
 #include <linux/compat.h>
+#include <linux/timekeeping.h>
 
 /** 0 means max **/
 #define NUM_SUBMIT_WORKER 2
@@ -362,8 +363,11 @@ struct biza_target {
     atomic64_t user_send;
     atomic64_t data_write;
     atomic64_t parity_write;
+    atomic64_t oop_parity_write;
     atomic64_t data_in_place_update;
     atomic64_t parity_in_place_update;
+
+    atomic64_t previous_print_time;
 };
 
 

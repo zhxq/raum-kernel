@@ -1,0 +1,18 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${default}"
+            ],
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "linux-gcc-x64",
+            "forcedInclude": [
+                "/lib/modules/5.15.0+/build/include/generated/autoconf.h"
+            ]
+        }
+    ],
+    "version": 4
+}
