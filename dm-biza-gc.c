@@ -239,7 +239,9 @@ static void biza_gc_work(struct work_struct *work)
 	struct biza_target *bt = gc->bt;
 	int ret = 0;
 
-	if (WRITE_AMP_STAT) {
+	if (WRITE_AMP_STAT &&
+	    ktime_get_boottime_ns() - atomic64_read(&bt->previous_print_time) >
+		    1000000000) {
 		pr_err("user_send %lld, data write %lld, parity write %lld, data in place update %lld, parity in place upate %lld, data flush %lld, parity flush %lld\n",
 		       atomic64_read(&bt->user_send),
 		       atomic64_read(&bt->data_write),
@@ -248,6 +250,7 @@ static void biza_gc_work(struct work_struct *work)
 		       atomic64_read(&bt->parity_in_place_update),
 		       atomic64_read(&bt->data_flush),
 		       atomic64_read(&bt->parity_flush));
+		atomic64_set(&bt->previous_print_time, ktime_get_boottime_ns());
 	}
 
 	if (!biza_should_gc(bt)) {
