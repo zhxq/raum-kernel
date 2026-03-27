@@ -1817,7 +1817,7 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 	left = bio_sectors(bio);
 
 	if (WRITE_AMP_STAT)
-		atomic64_add(left, &bt->user_send);
+		atomic64_add(left, &bt->user_read);
 
 	while (left > 0)
 	{
