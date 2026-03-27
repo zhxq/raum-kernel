@@ -1163,6 +1163,7 @@ static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	atomic64_set(&bt->user_send, 0);
 	atomic64_set(&bt->user_read, 0);
 	atomic64_set(&bt->data_write, 0);
+	atomic64_set(&bt->gc_write, 0);
 	atomic64_set(&bt->parity_write, 0);
 	atomic64_set(&bt->oop_parity_write, 0);
 	atomic64_set(&bt->data_in_place_update, 0);

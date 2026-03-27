@@ -154,6 +154,10 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 			dst.sector = dst_zone->wp;
 			dst.count = bt->params->chunk_size_sector;
 
+			if (WRITE_AMP_STAT)
+				atomic64_add(bt->params->chunk_size_sector,
+					     &bt->gc_write);
+
 			set_bit(BIZA_GC_KCOPY, &bt->gc->flags);
 			dm_kcopyd_copy(bt->gc->kc, &src, 1, &dst, flags,
 				       bt_gc_kcopy_end, bt->gc);
@@ -242,10 +246,11 @@ static void biza_gc_work(struct work_struct *work)
 	if (WRITE_AMP_STAT &&
 	    ktime_get_boottime_ns() - atomic64_read(&bt->previous_print_time) >
 		    1000000000) {
-		pr_err("user_send %lld, user_read %lld, data write %lld, parity write %lld, data in place update %lld, parity in place upate %lld, data flush %lld, parity flush %lld\n",
+		pr_err("user_send %lld, user_read %lld, data write %lld, gc write %lld, parity write %lld, data in place update %lld, parity in place upate %lld, data flush %lld, parity flush %lld\n",
 		       atomic64_read(&bt->user_send),
 		       atomic64_read(&bt->user_read),
 		       atomic64_read(&bt->data_write),
+		       atomic64_read(&bt->gc_write),
 		       atomic64_read(&bt->parity_write),
 		       atomic64_read(&bt->data_in_place_update),
 		       atomic64_read(&bt->parity_in_place_update),
