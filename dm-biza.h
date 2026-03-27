@@ -374,6 +374,7 @@ struct biza_target
 	atomic64_t data_write;
 	atomic64_t parity_write;
 	atomic64_t oop_parity_write;
+	atomic64_t gc_write;
 	atomic64_t data_in_place_update;
 	atomic64_t parity_in_place_update;
 
