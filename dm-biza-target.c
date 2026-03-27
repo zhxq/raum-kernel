@@ -1386,6 +1386,8 @@ static int biza_submit_stripe_head_write(struct biza_target *bt, struct bio *bio
 	struct bvec_iter iter;
 	struct bio_vec bvec;
 
+	uint64_t time;
+
 	BUG_ON(shioctx == NULL);
 
 	// send data chunk I/O
@@ -1473,7 +1475,16 @@ static int biza_submit_stripe_head_write(struct biza_target *bt, struct bio *bio
 		else if (sh->nr_data_written > 0)
 		{ // try in place update
 			pcn = biza_map_parity_lookup_pcn(bt, sh->no, i);
-			BUG_ON(pcn == BIZA_MAP_UNMAPPED || pcn == BIZA_MAP_INVALID);
+			time = ktime_get_boottime_ns();
+			while (pcn == BIZA_MAP_UNMAPPED || pcn == BIZA_MAP_INVALID)
+			{
+				cpu_relax();
+				pcn = biza_map_parity_lookup_pcn(bt, sh->no, i);
+				if (ktime_get_boottime_ns() - time > 10000000000)
+				{
+					BUG_ON(pcn == BIZA_MAP_UNMAPPED || pcn == BIZA_MAP_INVALID);
+				}
+			}
 
 			if (biza_can_chunk_update_in_place(bt, pcn))
 			{
