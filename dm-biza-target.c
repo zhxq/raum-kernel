@@ -137,27 +137,29 @@ void biza_flush_big_chunk(struct biza_target *bt,
 			}
 			stripe_no = bt->map->p2l[old_pcn].stripe_no;
 			stripe = xa_load(&bt->map->stripe_table, stripe_no);
-			bt->map->p2l[pcn].chunk_no = BIZA_MAP_PARITY;
-			bt->map->p2l[pcn].stripe_no = stripe_no;
-			bt->map->p2l[pcn].slot = chunkioctx->slot;
-			bt->map->p2l[pcn].in_raum = false;
-			if (old_pcn != BIZA_MAP_INVALID &&
-			    old_pcn != BIZA_MAP_UNMAPPED) {
-				bt->map->p2l[old_pcn].chunk_no =
-					BIZA_MAP_INVALID;
-				bt->map->p2l[old_pcn].stripe_no =
-					BIZA_MAP_INVALID;
-				bt->map->p2l[old_pcn].slot =
-					(uint8_t)BIZA_MAP_INVALID;
-				bt->map->p2l[old_pcn].in_raum = false;
-			}
-			stripe->parity_pcns[chunkioctx->slot] = pcn;
-			sh = xa_load(&bt->fshc, stripe_no);
-			// pr_err("pcn 0x%llx sh 0x%px\n", pcn, sh);
-			if (sh) {
-				// pr_err("!!Free parity buffer, pcn=0x%llx, sh->parity_cache=0x%px\n", pcn, sh->parity_cache);
-				xa_erase_irq(&bt->fshc, stripe_no);
-				biza_free_stripe_head(bt, sh);
+			if (stripe) {
+				bt->map->p2l[pcn].chunk_no = BIZA_MAP_PARITY;
+				bt->map->p2l[pcn].stripe_no = stripe_no;
+				bt->map->p2l[pcn].slot = chunkioctx->slot;
+				bt->map->p2l[pcn].in_raum = false;
+				if (old_pcn != BIZA_MAP_INVALID &&
+				    old_pcn != BIZA_MAP_UNMAPPED) {
+					bt->map->p2l[old_pcn].chunk_no =
+						BIZA_MAP_INVALID;
+					bt->map->p2l[old_pcn].stripe_no =
+						BIZA_MAP_INVALID;
+					bt->map->p2l[old_pcn].slot =
+						(uint8_t)BIZA_MAP_INVALID;
+					bt->map->p2l[old_pcn].in_raum = false;
+				}
+				stripe->parity_pcns[chunkioctx->slot] = pcn;
+				sh = xa_load(&bt->fshc, stripe_no);
+				// pr_err("pcn 0x%llx sh 0x%px\n", pcn, sh);
+				if (sh) {
+					// pr_err("!!Free parity buffer, pcn=0x%llx, sh->parity_cache=0x%px\n", pcn, sh->parity_cache);
+					xa_erase_irq(&bt->fshc, stripe_no);
+					biza_free_stripe_head(bt, sh);
+				}
 			}
 		} else {
 			if (WRITE_AMP_STAT) {
@@ -165,25 +167,31 @@ void biza_flush_big_chunk(struct biza_target *bt,
 			}
 			// Update mapping table for data chunks
 			old_lcn = chunkioctx->lcn;
-			bt->map->l2p[old_lcn].chunk_no = pcn;
-			bt->map->l2p[old_lcn].stripe_no =
-				bt->map->p2l[old_pcn].stripe_no;
-			bt->map->l2p[old_lcn].slot = chunkioctx->slot;
-			bt->map->l2p[old_lcn].in_raum = false;
-			bt->map->p2l[pcn].chunk_no = old_lcn;
-			bt->map->p2l[pcn].stripe_no =
-				bt->map->p2l[old_pcn].stripe_no;
-			bt->map->p2l[pcn].slot = chunkioctx->slot;
-			bt->map->p2l[pcn].in_raum = false;
-			bt->map->p2l[old_pcn].chunk_no = BIZA_MAP_INVALID;
-			bt->map->p2l[old_pcn].stripe_no = BIZA_MAP_INVALID;
-			bt->map->p2l[old_pcn].slot = (uint8_t)BIZA_MAP_INVALID;
-			bt->map->p2l[old_pcn].in_raum = false;
-			data_buffer = xa_load(&bt->dc, old_pcn);
-			BUG_ON(!data_buffer);
-			xa_erase_irq(&bt->dc, old_pcn);
-			// pr_err("!!Free data buffer, drive_idx %u, zone_idx %u, offset 0x%llx, pointer: 0x%px\n", drive_idx, zone_idx, wp_off, data_buffer);
-			biza_mempool_free(&bt->dcpool, data_buffer);
+			if (old_lcn != BIZA_MAP_INVALID &&
+			    old_lcn != BIZA_MAP_UNMAPPED) {
+				bt->map->l2p[old_lcn].chunk_no = pcn;
+				bt->map->l2p[old_lcn].stripe_no =
+					bt->map->p2l[old_pcn].stripe_no;
+				bt->map->l2p[old_lcn].slot = chunkioctx->slot;
+				bt->map->l2p[old_lcn].in_raum = false;
+				bt->map->p2l[pcn].chunk_no = old_lcn;
+				bt->map->p2l[pcn].stripe_no =
+					bt->map->p2l[old_pcn].stripe_no;
+				bt->map->p2l[pcn].slot = chunkioctx->slot;
+				bt->map->p2l[pcn].in_raum = false;
+				bt->map->p2l[old_pcn].chunk_no =
+					BIZA_MAP_INVALID;
+				bt->map->p2l[old_pcn].stripe_no =
+					BIZA_MAP_INVALID;
+				bt->map->p2l[old_pcn].slot =
+					(uint8_t)BIZA_MAP_INVALID;
+				bt->map->p2l[old_pcn].in_raum = false;
+				data_buffer = xa_load(&bt->dc, old_pcn);
+				BUG_ON(!data_buffer);
+				xa_erase_irq(&bt->dc, old_pcn);
+				// pr_err("!!Free data buffer, drive_idx %u, zone_idx %u, offset 0x%llx, pointer: 0x%px\n", drive_idx, zone_idx, wp_off, data_buffer);
+				biza_mempool_free(&bt->dcpool, data_buffer);
+			}
 		}
 	}
 
@@ -2938,12 +2946,12 @@ static int biza_handle_write(struct biza_target *bt, struct bio *bio)
 			  bt->params->chunk_size_sector_shift;
 
 		if (biza_is_data_in_raum(bt, cur_lcn)) {
-			pr_err("2 performing In-place update lcn 0x%llx, pcn 0x%llx\n",
-			       cur_lcn, bt->map->l2p[cur_lcn].chunk_no);
+			log("2 performing In-place update lcn 0x%llx, pcn 0x%llx\n",
+			    cur_lcn, bt->map->l2p[cur_lcn].chunk_no);
 			sh = biza_data_update_get_sh(bt, cur_lcn);
 			if (sh &&
 			    biza_can_raum_data_update_in_place(bt, cur_lcn)) {
-				pr_err("Found sh!!!\n");
+				log("Found sh!!!\n");
 				ret = biza_handle_data_in_place_update(
 					bt, bio, sh, big_chunks);
 				if (ret)
@@ -2952,7 +2960,7 @@ static int biza_handle_write(struct biza_target *bt, struct bio *bio)
 				       bt->params->chunk_size_sector_shift;
 				continue;
 			} else {
-				pr_err("2 sh not found\n");
+				log("2 sh not found\n");
 			}
 		}
 		chunk_cnt = 0;
