@@ -1091,8 +1091,53 @@ static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto err_dc;
 	}
 
-	ret = biza_ctr_mempool(&bt->largepcpool, BIZA_PARITY_CACHE_SIZE,
-			       bt->params->max_chunk_size_sector_shift -
+	ret = biza_ctr_mempool(&bt->largepcpool64, BIZA_PARITY_CACHE_SIZE,
+			       bt->params->max_chunk_size_sector_shift - 0 -
+				       PAGE_SECTORS_SHIFT);
+	if (ret) {
+		ti->error = "Failed to create large parity cache";
+		ret = -ENOMEM;
+		goto err_dc;
+	}
+
+	ret = biza_ctr_mempool(&bt->largepcpool32, BIZA_PARITY_CACHE_SIZE,
+			       bt->params->max_chunk_size_sector_shift - 1 -
+				       PAGE_SECTORS_SHIFT);
+	if (ret) {
+		ti->error = "Failed to create large parity cache";
+		ret = -ENOMEM;
+		goto err_dc;
+	}
+
+	ret = biza_ctr_mempool(&bt->largepcpool16, BIZA_PARITY_CACHE_SIZE,
+			       bt->params->max_chunk_size_sector_shift - 2 -
+				       PAGE_SECTORS_SHIFT);
+	if (ret) {
+		ti->error = "Failed to create large parity cache";
+		ret = -ENOMEM;
+		goto err_dc;
+	}
+
+	ret = biza_ctr_mempool(&bt->largepcpool8, BIZA_PARITY_CACHE_SIZE,
+			       bt->params->max_chunk_size_sector_shift - 3 -
+				       PAGE_SECTORS_SHIFT);
+	if (ret) {
+		ti->error = "Failed to create large parity cache";
+		ret = -ENOMEM;
+		goto err_dc;
+	}
+
+	ret = biza_ctr_mempool(&bt->largepcpool4, BIZA_PARITY_CACHE_SIZE,
+			       bt->params->max_chunk_size_sector_shift - 4 -
+				       PAGE_SECTORS_SHIFT);
+	if (ret) {
+		ti->error = "Failed to create large parity cache";
+		ret = -ENOMEM;
+		goto err_dc;
+	}
+
+	ret = biza_ctr_mempool(&bt->largepcpool2, BIZA_PARITY_CACHE_SIZE,
+			       bt->params->max_chunk_size_sector_shift - 5 -
 				       PAGE_SECTORS_SHIFT);
 	if (ret) {
 		ti->error = "Failed to create large parity cache";
@@ -1199,17 +1244,45 @@ static inline void biza_init_bioctx(struct biza_target *bt, struct bio *bio)
 	refcount_set(&bioctx->ref, 1);
 }
 
+struct biza_mempool *biza_find_pcpool(struct biza_target *bt,
+				      uint64_t chunks_per_shard)
+{
+	switch (chunks_per_shard) {
+	case 64:
+		return &bt->largepcpool64;
+	case 32:
+		return &bt->largepcpool32;
+	case 16:
+		return &bt->largepcpool16;
+	case 8:
+		return &bt->largepcpool8;
+	case 4:
+		return &bt->largepcpool4;
+	case 2:
+		return &bt->largepcpool2;
+	case 1:
+		return &bt->pcpool;
+
+	default:
+		pr_err("Error chunks per shard: %llu\n", chunks_per_shard);
+		BUG_ON(1);
+		break;
+	}
+}
+
 // Free stripe head
 void biza_free_stripe_head(struct biza_target *bt, biza_stripe_head_t *sh)
 {
 	// kvfree(sh->parity_cache);
-	biza_mempool_free(&bt->pcpool, sh->parity_cache);
+	biza_mempool_free(biza_find_pcpool(bt, sh->chunks_in_shard),
+			  sh->parity_cache);
 	kfree(sh);
 }
 
 // Allocate an empty stripe head & init
-static biza_stripe_head_t *biza_alloc_empty_stripe_head(struct biza_target *bt,
-							bool larger_chunk)
+static biza_stripe_head_t *
+biza_alloc_empty_stripe_head(struct biza_target *bt, bool larger_chunk,
+			     uint64_t chunks_per_shard)
 {
 	biza_stripe_head_t *sh =
 		kzalloc(sizeof(biza_stripe_head_t), GFP_KERNEL);
@@ -1221,7 +1294,8 @@ static biza_stripe_head_t *biza_alloc_empty_stripe_head(struct biza_target *bt,
 
 		// sh->parity_cache = kvzalloc(bt->params->m * bt->params->chunk_size_byte, GFP_KERNEL);
 		if (larger_chunk) {
-			sh->parity_cache = biza_mempool_alloc(&bt->largepcpool);
+			sh->parity_cache = biza_mempool_alloc(
+				biza_find_pcpool(bt, chunks_per_shard));
 		} else {
 			sh->parity_cache = biza_mempool_alloc(&bt->pcpool);
 		}
@@ -1252,7 +1326,7 @@ static biza_stripe_head_t *biza_get_partial_stripe_head(struct biza_target *bt)
 		spin_unlock_irqrestore(&bt->pshl_lock, flags);
 	} else {
 		spin_unlock_irqrestore(&bt->pshl_lock, flags);
-		sh = biza_alloc_empty_stripe_head(bt, false);
+		sh = biza_alloc_empty_stripe_head(bt, false, 1);
 	}
 
 	return sh;
@@ -1291,15 +1365,14 @@ biza_stripe_head_t *biza_get_stripe_head_with_no(struct biza_target *bt,
 // Compute parities
 static int biza_compute_parity(struct biza_target *bt, struct bio *bio,
 			       biza_stripe_head_t *sh, uint8_t chunk_cnt,
-			       bool larger_chunk)
+			       bool larger_chunk, uint64_t chunks_per_shard)
 {
 	void **chunks = kzalloc(
 		(chunk_cnt + bt->params->m) * sizeof(uint64_t *), GFP_KERNEL);
 	uint8_t *bvec_start, *data_start;
 	struct bvec_iter iter;
 	struct bio_vec bvec;
-	uint64_t chunk_size = larger_chunk ? bt->params->max_chunk_size_byte :
-					     bt->params->chunk_size_byte;
+	uint64_t chunk_size = chunks_per_shard * bt->params->chunk_size_byte;
 	int i = 0, this_cnt = 0, src_off = 0;
 
 	if (bt->params->m != 1) {
@@ -1879,7 +1952,7 @@ void biza_chunkio_endio(struct bio *chunkio)
 	struct biza_target *bt;
 	biza_raum_big_chunk_t *big_chunk;
 	int ret;
-	int i, max_i;
+	int i;
 
 	bt = chunkioctx->bt;
 
@@ -1927,21 +2000,19 @@ void biza_chunkio_endio(struct bio *chunkio)
 			// }
 		}
 
-		max_i = sh->larger_chunk ? RAUM_LARGER_CHUNK_PAGES : 1;
-
 		// TODO: add subslot numbers (i) to keep track of
 		// normal chunks in larger chunks
 		if (chunkioctx->type == BIZA_DATA_WRITE) {
 			biza_map_update_data_wrt(
 				chunkioctx->bt, chunkioctx->lcn,
 				chunkioctx->pcn, sh->no, chunkioctx->slot,
-				chunkioctx->in_raum, sh->larger_chunk);
+				chunkioctx->in_raum, sh->larger_chunk,
+				sh->chunks_in_shard);
 		} else if (chunkioctx->type == BIZA_PARITY_WRITE) {
-			biza_map_update_parity_wrt(chunkioctx->bt,
-						   chunkioctx->pcn, sh->no,
-						   chunkioctx->slot,
-						   chunkioctx->in_raum,
-						   sh->larger_chunk);
+			biza_map_update_parity_wrt(
+				chunkioctx->bt, chunkioctx->pcn, sh->no,
+				chunkioctx->slot, chunkioctx->in_raum,
+				sh->larger_chunk, sh->chunks_in_shard);
 		}
 
 		// log("dm-biza: mid small io lcn: 0x%llx, io_type %d, bi_status %d, drive_idx %u, offset 0x%llx, sectors %u, shref %d\n",
@@ -1974,8 +2045,10 @@ void biza_chunkio_endio(struct bio *chunkio)
 								 "false");
 		} else {
 			if (chunkioctx->lcn == BIZA_MAP_PARITY) {
-				biza_mempool_free(&bt->largepcpool,
-						  sh->parity_cache);
+				biza_mempool_free(
+					biza_find_pcpool(bt,
+							 sh->chunks_in_shard),
+					sh->parity_cache);
 			}
 		}
 
@@ -2086,12 +2159,12 @@ void biza_bigchunkio_endio(struct bio *chunkio)
 					chunkioctx->bt, chunkioctx->lcn,
 					chunkioctx->pcn, sh->no,
 					chunkioctx->slot, chunkioctx->in_raum,
-					false);
+					false, 1);
 			} else if (chunkioctx->type == BIZA_PARITY_WRITE) {
 				biza_map_update_parity_wrt(
 					chunkioctx->bt, chunkioctx->pcn, sh->no,
 					chunkioctx->slot, chunkioctx->in_raum,
-					false);
+					false, 1);
 			}
 
 			// TODO: set in_raum to false when flushing
@@ -2116,12 +2189,11 @@ void biza_bigchunkio_endio(struct bio *chunkio)
 }
 
 // Send stripe I/O to SSDs
-static int biza_submit_stripe_head_write(struct biza_target *bt,
-					 struct bio *bio,
-					 biza_stripe_head_t *sh,
-					 uint8_t chunk_cnt,
-					 biza_raum_big_chunk_t **big_chunks,
-					 bool larger_chunk)
+static int
+biza_submit_stripe_head_write(struct biza_target *bt, struct bio *bio,
+			      biza_stripe_head_t *sh, uint8_t chunk_cnt,
+			      biza_raum_big_chunk_t **big_chunks,
+			      bool larger_chunk, uint64_t chunks_in_shard)
 {
 	// pr_err("enter: type:%u chunks:%u bio=0x%px bt=0x%px bi_size=%u vcnt=%u idx=%u done=%u\n",
 	//    type, chunk_cnt, bio, bt, bio->bi_iter.bi_size, bio->bi_vcnt,
@@ -2147,7 +2219,9 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 	biza_raum_big_chunk_t *big_chunk, *old_big_chunk;
 	sector_t bi_sector;
 
-	int num_chunks = larger_chunk ? RAUM_LARGER_CHUNK_PAGES : 1;
+	uint64_t num_chunks = chunks_in_shard;
+	sector_t sectors_in_shard = num_chunks * bt->params->chunk_size_sector;
+	sector_t bytes_in_shard = num_chunks * bt->params->chunk_size_byte;
 
 	bool data_in_raum, parity_oop;
 
@@ -2219,9 +2293,9 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 			if (larger_chunk) {
 				data_in_raum = false;
 				bdev = bt->devs[drive_idx].dev->bdev;
-				biza_get_write_location(
-					bt, lcn, drive_idx, &zone_idx, &offset,
-					bt->params->max_chunk_size_sector);
+				biza_get_write_location(bt, lcn, drive_idx,
+							&zone_idx, &offset,
+							sectors_in_shard);
 				pcn = biza_idx_to_pcn(bt, drive_idx, zone_idx,
 						      offset);
 				bi_sector = biza_idx_to_sector(
@@ -2231,11 +2305,8 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 				    bi_sector, sh->no);
 
 				if (WRITE_AMP_STAT)
-					atomic64_add(
-						bt->params
-							->max_chunk_size_sector,
-						&bt->data_write);
-
+					atomic64_add(sectors_in_shard,
+						     &bt->data_write);
 				chunkio = bio_clone_fast(bio, GFP_NOIO,
 							 &bt->bio_set);
 				if (!chunkio)
@@ -2246,8 +2317,7 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 						  (bio->bi_opf & ~REQ_OP_MASK);
 
 				chunkio->bi_iter.bi_sector = bi_sector;
-				chunkio->bi_iter.bi_size =
-					bt->params->max_chunk_size_byte;
+				chunkio->bi_iter.bi_size = bytes_in_shard;
 				chunkio->bi_end_io = biza_chunkio_endio;
 
 				chunkioctx =
@@ -2273,8 +2343,7 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 
 				submit_bio_noacct(chunkio);
 
-				bio_advance(bio,
-					    bt->params->max_chunk_size_byte);
+				bio_advance(bio, bytes_in_shard);
 			} else {
 				big_chunk = big_chunks[drive_idx];
 				biza_update_pred(bt, big_chunk->start_pcn);
@@ -2554,9 +2623,8 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 			log("larger chunk parity write\n");
 			drive_idx = (sh->no + i) % bt->params->nr_drives;
 			big_chunk = big_chunks[drive_idx];
-			biza_get_write_location(
-				bt, lcn, drive_idx, &zone_idx, &offset,
-				bt->params->max_chunk_size_sector);
+			biza_get_write_location(bt, lcn, drive_idx, &zone_idx,
+						&offset, sectors_in_shard);
 			pcn = biza_idx_to_pcn(bt, drive_idx, zone_idx, offset);
 			bi_sector = biza_idx_to_sector(bt, drive_idx, zone_idx,
 						       offset, true);
@@ -2565,18 +2633,16 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 			    lcn, pcn, drive_idx, offset, bi_sector);
 
 			if (WRITE_AMP_STAT)
-				atomic64_add(bt->params->max_chunk_size_sector,
+				atomic64_add(sectors_in_shard,
 					     &bt->parity_write);
 
 			chunkio = bio_alloc_bioset(GFP_NOIO, 1, &bt->bio_set);
-			ret = bio_add_page(
-				chunkio,
-				virt_to_page(
-					sh->parity_cache +
-					i * bt->params->max_chunk_size_byte),
-				bt->params->max_chunk_size_byte, 0);
+			ret = bio_add_page(chunkio,
+					   virt_to_page(sh->parity_cache +
+							i * bytes_in_shard),
+					   bytes_in_shard, 0);
 			// log("parity in-place 2\n");
-			if (ret != bt->params->max_chunk_size_byte) {
+			if (ret != bytes_in_shard) {
 				BUG_ON(1);
 				return -EIO;
 			}
@@ -2586,8 +2652,7 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 			chunkio->bi_opf = REQ_OP_ZONE_APPEND |
 					  (bio->bi_opf & ~REQ_OP_MASK);
 			chunkio->bi_iter.bi_sector = bi_sector;
-			chunkio->bi_iter.bi_size =
-				bt->params->max_chunk_size_byte;
+			chunkio->bi_iter.bi_size = bytes_in_shard;
 			chunkio->bi_end_io = biza_chunkio_endio;
 			// log("parity in-place 4\n");
 			chunkioctx = kzalloc(sizeof(struct biza_chunkioctx),
@@ -2633,14 +2698,15 @@ static int biza_submit_stripe_head_write(struct biza_target *bt,
 static int biza_handle_full_stripe_write(struct biza_target *bt,
 					 struct bio *bio,
 					 biza_raum_big_chunk_t **big_chunks,
-					 bool larger_chunk)
+					 bool larger_chunk,
+					 uint64_t chunks_in_shard)
 {
 	biza_stripe_head_t *sh;
 	struct biza_bioctx *bioctx =
 		dm_per_bio_data(bio, sizeof(struct biza_bioctx));
 	int ret;
 
-	sh = biza_alloc_empty_stripe_head(bt, larger_chunk);
+	sh = biza_alloc_empty_stripe_head(bt, larger_chunk, chunks_in_shard);
 	if (!sh) {
 		pr_err("dm-biza: io error: cannot alloc empty stripe");
 		return -ENOMEM;
@@ -2656,17 +2722,20 @@ static int biza_handle_full_stripe_write(struct biza_target *bt,
 			       bt->params->chunk_size_sector_shift;
 	sh->ioctx->type = BIZA_SH_WRITE;
 	sh->larger_chunk = larger_chunk;
+	sh->chunks_in_shard = chunks_in_shard;
 	refcount_inc(&bioctx->ref);
 	// refcount_add(bt->params->k, &bioctx->ref);
 
-	ret = biza_compute_parity(bt, bio, sh, bt->params->k, larger_chunk);
+	ret = biza_compute_parity(bt, bio, sh, bt->params->k, larger_chunk,
+				  chunks_in_shard);
 	if (ret) {
 		pr_err("dm-biza: io error: compute parity error");
 		return -EIO;
 	}
 
 	ret = biza_submit_stripe_head_write(bt, bio, sh, bt->params->k,
-					    big_chunks, larger_chunk);
+					    big_chunks, larger_chunk,
+					    chunks_in_shard);
 	if (ret) {
 		pr_err("dm-biza: io error: cannot submit full stripe write, err %d",
 		       ret);
@@ -2706,17 +2775,18 @@ static int biza_handle_partial_stripe_write(struct biza_target *bt,
 		sh->ioctx->lcn_start = bio->bi_iter.bi_sector >>
 				       bt->params->chunk_size_sector_shift;
 		sh->ioctx->type = BIZA_SH_WRITE;
+		sh->chunks_in_shard = 1;
 		refcount_inc(&bioctx->ref);
 		// refcount_add(nr_data_write, &bioctx->ref);
 
-		ret = biza_compute_parity(bt, bio, sh, nr_data_write, false);
+		ret = biza_compute_parity(bt, bio, sh, nr_data_write, false, 1);
 		if (ret) {
 			pr_err("dm-biza: io error: compute parity error");
 			return -ENOMEM;
 		}
 
 		ret = biza_submit_stripe_head_write(bt, bio, sh, nr_data_write,
-						    big_chunks, false);
+						    big_chunks, false, 1);
 		if (ret) {
 			pr_err("dm-biza: io error: cannot submit paritial stripe write");
 			return -EIO;
@@ -2783,7 +2853,8 @@ static int biza_handle_data_in_place_update(struct biza_target *bt,
 	kfree(srcs);
 
 	/** submit stripe head **/
-	ret = biza_submit_stripe_head_write(bt, bio, sh, 1, big_chunks, false);
+	ret = biza_submit_stripe_head_write(bt, bio, sh, 1, big_chunks, false,
+					    1);
 	if (ret) {
 		pr_err("dm-biza: io error: cannot submit data update in place");
 		return -EIO;
@@ -2804,6 +2875,8 @@ static int biza_handle_write(struct biza_target *bt, struct bio *bio)
 	biza_raum_big_chunk_t *big_chunk;
 	sector_t biza_flush_lcn = BIZA_MAP_INVALID;
 	sector_t pcn = BIZA_MAP_INVALID;
+	uint8_t shift;
+	uint64_t chunks;
 	int ret, i;
 
 	for (i = 0; i < bt->params->nr_drives; i++) {
@@ -2840,7 +2913,8 @@ static int biza_handle_write(struct biza_target *bt, struct bio *bio)
 		// 		goto out;
 		// 	}
 		// }
-		ret = biza_handle_full_stripe_write(bt, bio, big_chunks, true);
+		ret = biza_handle_full_stripe_write(bt, bio, big_chunks, true,
+						    RAUM_LARGER_CHUNK_PAGES);
 		if (ret)
 			return -EIO;
 
@@ -2886,7 +2960,7 @@ out:
 
 		if (chunk_cnt == bt->params->k) {
 			ret = biza_handle_full_stripe_write(bt, bio, big_chunks,
-							    false);
+							    false, 1);
 			if (ret)
 				return -EIO;
 		} else if (chunk_cnt > 0 && chunk_cnt < bt->params->k) {
