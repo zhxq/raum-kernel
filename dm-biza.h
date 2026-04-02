@@ -4,6 +4,7 @@
 #include <linux/fs.h>
 #include <linux/file.h>
 #include <linux/uio.h>
+#include <linux/vmalloc.h>
 #include <linux/types.h>
 #include <linux/blkdev.h>
 #include <linux/device-mapper.h>

@@ -1418,14 +1418,15 @@ static inline bool biza_allocate_wp(struct biza_target *bt, uint8_t drive_idx,
 		down_write(&dev->ozlock);
 		while (atomic64_read(&zone->in_flight_ios) !=
 		       atomic64_read(&zone->finished_ios)) {
-			pr_err("Waiting for in flight io (%llu/%llu finished)\n",
+			pr_err("Drive %u zone %u Waiting for in flight io (%llu/%llu finished)\n",
+			       drive_idx, zone_idx,
 			       atomic64_read(&zone->finished_ios),
 			       atomic64_read(&zone->in_flight_ios));
 			cpu_relax();
 			cond_resched();
 		}
 		ret = biza_finish_zone(bt, dev, zone_idx);
-		pr_err("finish zone %u\n", zone_idx);
+		pr_err("Drive %u finish zone %u\n", drive_idx, zone_idx);
 		dev->open_zones[oz_idx] = biza_open_empty_zone(
 			bt, dev, true,
 			biza_oz_idx_to_aware_type(bt, drive_idx, oz_idx));
@@ -1439,6 +1440,7 @@ static inline bool biza_allocate_wp(struct biza_target *bt, uint8_t drive_idx,
 
 		zone_idx = dev->open_zones[oz_idx];
 		zone = &dev->zones[zone_idx];
+		zone->wp += size;
 		spin_lock_irqsave(&zone->zlock, *flags);
 	}
 
@@ -1567,7 +1569,10 @@ static bool biza_get_zone_write_location(struct biza_target *bt,
 		while (zone->cond == BLK_ZONE_COND_FULL) {
 			up_read(&dev->ozlock);
 			udelay(1);
-			pr_err("Zone %u is full\n", zone_idx);
+			pr_err("Drive %u Zone %u is full\n", drive_idx,
+			       *zone_idx);
+			cpu_relax();
+			cond_resched();
 			continue;
 		}
 
