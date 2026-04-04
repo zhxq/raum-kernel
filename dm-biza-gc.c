@@ -246,7 +246,7 @@ static void biza_gc_work(struct work_struct *work)
 	if (WRITE_AMP_STAT &&
 	    ktime_get_boottime_ns() - atomic64_read(&bt->previous_print_time) >
 		    1000000000) {
-		pr_err("user_send %lld, user_read %lld, data write %lld, gc write %lld, parity write %lld, data in place update %lld, parity in place upate %lld, data flush %lld, parity flush %lld\n",
+		pr_err("user_send %lld, user_read %lld, data write %lld, gc write %lld, parity write %lld, data in place update %lld, parity in place update %lld, data flush %lld, parity flush %lld\n",
 		       atomic64_read(&bt->user_send),
 		       atomic64_read(&bt->user_read),
 		       atomic64_read(&bt->data_write),

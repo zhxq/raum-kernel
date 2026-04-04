@@ -346,6 +346,7 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 	struct biza_raum_dev *dev;
 	// unsigned long flags;
 	int i = 0, j = 0, k = 0, max_i = chunks_in_shard;
+	BUG_ON(max_i < 1 || max_i > RAUM_LARGER_CHUNK_PAGES);
 	int original_stripe_max_i = 1;
 
 	// log("1 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
@@ -357,7 +358,7 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 		xa_store(&bt->map->stripe_table, no, stripe, GFP_ATOMIC);
 		// pr_err("data creating stripe: 0x%llx\n", no);
 	}
-	stripe->used++;
+
 	stripe->chunks_in_shard = chunks_in_shard;
 
 	for (i = 0; i < max_i; i++) {
@@ -375,6 +376,7 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 
 		stripe->data_lcns[slot] = lcn;
 		stripe->valid++;
+		stripe->used++;
 
 		// log("2 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
 		//     lcn, pcn, no, slot, in_raum);
@@ -401,58 +403,55 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 			org_stripe->data_lcns[org_slot] = BIZA_MAP_INVALID;
 
 			// All data in original stripe is invalid
-			if (--org_stripe->valid == 0) {
-				if (org_stripe->used == bt->params->k) {
-					// log("6 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
-					//     lcn, pcn, no, slot, in_raum);
-					for (j = 0; j < bt->params->m; ++j) {
-						// TODO: need to invalidate several PCN mappings when dealing with larger chunks
-						org_parity_pcn =
-							org_stripe
-								->parity_pcns[j];
-						if (!biza_is_valid_pcn(
-							    bt,
-							    org_parity_pcn)) {
-							continue;
-						}
-						bt->map->p2l[org_parity_pcn]
-							.chunk_no =
-							BIZA_MAP_INVALID;
-						bt->map->p2l[org_parity_pcn]
-							.stripe_no =
-							BIZA_MAP_INVALID;
-						bt->map->p2l[org_parity_pcn]
-							.slot = (uint8_t)
-							BIZA_MAP_INVALID;
-						if (!bt->map->p2l[org_parity_pcn]
-							     .in_raum) {
-							// pr_err("Inloop Data update lcn: 0x%llx, pcn: 0x%llx, original_pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
-							//        lcn, org_pcn, pcn, no,
-							//        slot, in_raum);
-							original_stripe_max_i =
-								org_stripe
-									->chunks_in_shard;
-							for (k = 0;
-							     k <
-							     original_stripe_max_i;
-							     k++) {
-								biza_pcn_to_idx(
-									bt,
-									org_parity_pcn +
-										k,
-									&org_drive_idx,
-									&org_zone_idx,
-									&org_offset);
-								bt->devs[org_drive_idx]
-									.zones[org_zone_idx]
-									.nr_invalid_chunks++;
-							}
-						}
-					}
-					xa_erase(&bt->map->stripe_table,
-						 org_stripe_no);
-					biza_free_stripe(bt, org_stripe);
-				}
+			if (--org_stripe->valid == 0 &&
+			    org_stripe->used ==
+				    bt->params->k *
+					    org_stripe->chunks_in_shard) {
+				original_stripe_max_i =
+					org_stripe->chunks_in_shard;
+				// log("6 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
+				//     lcn, pcn, no, slot, in_raum);
+				// for (j = 0; j < bt->params->m; ++j) {
+				// 	for (k = 0; k < original_stripe_max_i;
+				// 	     k++) {
+				// 		// TODO: need to invalidate several PCN mappings when dealing with larger chunks
+				// 		org_parity_pcn =
+				// 			org_stripe
+				// 				->parity_pcns[j] +
+				// 			k;
+				// 		if (!biza_is_valid_pcn(
+				// 			    bt,
+				// 			    org_parity_pcn)) {
+				// 			continue;
+				// 		}
+				// 		bt->map->p2l[org_parity_pcn]
+				// 			.chunk_no =
+				// 			BIZA_MAP_INVALID;
+				// 		bt->map->p2l[org_parity_pcn]
+				// 			.stripe_no =
+				// 			BIZA_MAP_INVALID;
+				// 		bt->map->p2l[org_parity_pcn]
+				// 			.slot = (uint8_t)
+				// 			BIZA_MAP_INVALID;
+				// 		if (!bt->map->p2l[org_parity_pcn]
+				// 			     .in_raum) {
+				// 			// pr_err("Inloop Data update lcn: 0x%llx, pcn: 0x%llx, original_pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
+				// 			//        lcn, org_pcn, pcn, no,
+				// 			//        slot, in_raum);
+				// 			biza_pcn_to_idx(
+				// 				bt,
+				// 				org_parity_pcn,
+				// 				&org_drive_idx,
+				// 				&org_zone_idx,
+				// 				&org_offset);
+				// 			bt->devs[org_drive_idx]
+				// 				.zones[org_zone_idx]
+				// 				.nr_invalid_chunks++;
+				// 		}
+				// 	}
+				// }
+				// xa_erase(&bt->map->stripe_table, org_stripe_no);
+				// biza_free_stripe(bt, org_stripe);
 			}
 		}
 	}

@@ -108,14 +108,14 @@ void biza_flush_big_chunk(struct biza_target *bt,
 	biza_get_write_location(bt, big_chunk->start_pcn, drive_idx, &zone_idx,
 				&offset, size);
 	wp = biza_idx_to_sector(bt, drive_idx, zone_idx, raid_offset, true);
-	log("Flushing loc: big_chunk start pcn 0x%llx, drive_idx: %u, zone_idx %u, target wp: 0x%llx, size 0x%llx\n",
-	    big_chunk->start_pcn, drive_idx, zone_idx, wp, size);
+	pr_err("Flushing loc: big_chunk start pcn 0x%llx, drive_idx: %u, zone_idx %u, target wp: 0x%llx, size 0x%llx\n",
+	       big_chunk->start_pcn, drive_idx, zone_idx, wp, size);
 	wp = biza_flush_raum_area(bt, drive_idx, zone_idx, wp, size,
 				  big_chunk->start_sector);
 	append_pcn_base = biza_sector_to_pcn(bt, drive_idx, wp);
-	log("Flushed loc: big_chunk start pcn 0x%llx, drive_idx: %u, zone_idx %u, target wp: 0x%llx, size 0x%llx, base 0x%llx\n",
-	    big_chunk->start_pcn, drive_idx, zone_idx, wp, size,
-	    append_pcn_base);
+	pr_err("Flushed loc: big_chunk start pcn 0x%llx, drive_idx: %u, zone_idx %u, target wp: 0x%llx, size 0x%llx, base 0x%llx\n",
+	       big_chunk->start_pcn, drive_idx, zone_idx, wp, size,
+	       append_pcn_base);
 	for (i = 0; i < RAUM_BIG_CHUNK_PAGES; i++) {
 		pcn = append_pcn_base + i;
 		if (!biza_is_valid_pcn(bt, pcn)) {
@@ -137,29 +137,32 @@ void biza_flush_big_chunk(struct biza_target *bt,
 			}
 			stripe_no = bt->map->p2l[old_pcn].stripe_no;
 			stripe = xa_load(&bt->map->stripe_table, stripe_no);
-			if (stripe) {
-				bt->map->p2l[pcn].chunk_no = BIZA_MAP_PARITY;
-				bt->map->p2l[pcn].stripe_no = stripe_no;
-				bt->map->p2l[pcn].slot = chunkioctx->slot;
-				bt->map->p2l[pcn].in_raum = false;
-				if (old_pcn != BIZA_MAP_INVALID &&
-				    old_pcn != BIZA_MAP_UNMAPPED) {
-					bt->map->p2l[old_pcn].chunk_no =
-						BIZA_MAP_INVALID;
-					bt->map->p2l[old_pcn].stripe_no =
-						BIZA_MAP_INVALID;
-					bt->map->p2l[old_pcn].slot =
-						(uint8_t)BIZA_MAP_INVALID;
-					bt->map->p2l[old_pcn].in_raum = false;
-				}
-				stripe->parity_pcns[chunkioctx->slot] = pcn;
-				sh = xa_load(&bt->fshc, stripe_no);
-				// pr_err("pcn 0x%llx sh 0x%px\n", pcn, sh);
-				if (sh) {
-					// pr_err("!!Free parity buffer, pcn=0x%llx, sh->parity_cache=0x%px\n", pcn, sh->parity_cache);
-					xa_erase_irq(&bt->fshc, stripe_no);
-					biza_free_stripe_head(bt, sh);
-				}
+			if (!stripe) {
+				pr_err("Stripe 0x%llx not found!\n", stripe_no);
+				BUG_ON(!stripe);
+			}
+
+			bt->map->p2l[pcn].chunk_no = BIZA_MAP_PARITY;
+			bt->map->p2l[pcn].stripe_no = stripe_no;
+			bt->map->p2l[pcn].slot = chunkioctx->slot;
+			bt->map->p2l[pcn].in_raum = false;
+			if (old_pcn != BIZA_MAP_INVALID &&
+			    old_pcn != BIZA_MAP_UNMAPPED) {
+				bt->map->p2l[old_pcn].chunk_no =
+					BIZA_MAP_INVALID;
+				bt->map->p2l[old_pcn].stripe_no =
+					BIZA_MAP_INVALID;
+				bt->map->p2l[old_pcn].slot =
+					(uint8_t)BIZA_MAP_INVALID;
+				bt->map->p2l[old_pcn].in_raum = false;
+			}
+			stripe->parity_pcns[chunkioctx->slot] = pcn;
+			sh = xa_load(&bt->fshc, stripe_no);
+			// pr_err("pcn 0x%llx sh 0x%px\n", pcn, sh);
+			if (sh) {
+				// pr_err("!!Free parity buffer, pcn=0x%llx, sh->parity_cache=0x%px\n", pcn, sh->parity_cache);
+				xa_erase_irq(&bt->fshc, stripe_no);
+				biza_free_stripe_head(bt, sh);
 			}
 		} else {
 			if (WRITE_AMP_STAT) {
@@ -3071,7 +3074,11 @@ static int biza_submit_chunk_read(struct biza_target *bt, struct bio *bio,
 static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 {
 	sector_t cur_sec, nxt_sec, size, left;
-	sector_t lcn, pcn, temp_lcn, temp_pcn;
+	sector_t lcn, pcn, temp_lcn, temp_pcn, start_lcn, end_lcn;
+	biza_raum_big_chunk_t *big_chunk;
+	sector_t raum_lcns[RAUM_BIG_CHUNK_PAGES];
+	bool data_in_raum = false;
+	int raum_lcns_len = 0;
 	int ret;
 	int i;
 
@@ -3082,6 +3089,7 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 		atomic64_add(left, &bt->user_read);
 
 	while (left > 0) {
+		data_in_raum = false;
 		cur_sec = bio->bi_iter.bi_sector;
 		// e.g., chunk = 128 sec, 0->128, 32->128
 		nxt_sec = min(round_up(cur_sec + 1,
@@ -3091,6 +3099,20 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 
 		lcn = cur_sec >> bt->params->chunk_size_sector_shift;
 		pcn = biza_map_lcn_lookup_pcn(bt, lcn);
+
+		if (biza_is_data_in_raum(bt, lcn)) {
+			data_in_raum = true;
+			big_chunk = biza_find_big_chunk_by_pcn(bt, pcn);
+			atomic64_inc(&big_chunk->updates_in_flight);
+			if (atomic64_read(&big_chunk->flush_in_flight)) {
+				atomic64_dec(&big_chunk->updates_in_flight);
+				while (atomic64_read(
+					&big_chunk->flush_in_flight)) {
+					cpu_relax();
+				}
+			}
+			goto read;
+		}
 
 		for (i = 1;; i++) {
 			temp_lcn = lcn + i;
@@ -3119,10 +3141,16 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 			}
 		}
 
+read:
 		ret = biza_submit_chunk_read(bt, bio, lcn, pcn, size);
 		if (ret) {
 			pr_err("dm-biza: io error: cannot submit chunk read");
 			return -EIO;
+		}
+
+		if (data_in_raum) {
+			big_chunk = biza_find_big_chunk_by_pcn(bt, pcn);
+			atomic64_dec(&big_chunk->updates_in_flight);
 		}
 
 		left = bio_sectors(bio);
