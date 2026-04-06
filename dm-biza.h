@@ -312,6 +312,7 @@ typedef struct biza_stripe_head {
 	struct work_struct work;
 	struct biza_target *bt;
 	uint64_t no;
+	uint64_t lcn;
 	uint8_t nr_data_written;
 	uint8_t *parity_cache; // for buffering partial parity
 	bool larger_chunk;
@@ -643,7 +644,7 @@ static bool biza_is_valid_pcn(struct biza_target *bt, sector_t pcn)
 {
 	if (pcn >=
 	    bt->params->nr_internal_chunks + bt->params->nr_total_raum_chunks) {
-		pr_err("Invalid pcn 0x%llx\n", pcn);
+		// pr_err("Invalid pcn 0x%llx\n", pcn);
 		return false;
 	}
 

@@ -357,10 +357,9 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 	stripe = xa_load(&bt->map->stripe_table, no);
 	if (!stripe) {
 		stripe = biza_alloc_stripe(bt, larger_chunk, chunks_in_shard);
-		xa_store(&bt->map->stripe_table, no, stripe, GFP_ATOMIC);
+		xa_store_irq(&bt->map->stripe_table, no, stripe, GFP_ATOMIC);
 		// pr_err("data creating stripe: 0x%llx\n", no);
 	}
-	stripe->used++;
 	stripe->larger_chunk = larger_chunk;
 	stripe->chunks_in_shard = chunks_in_shard;
 
@@ -379,6 +378,7 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 
 		stripe->data_lcns[slot] = lcn;
 		stripe->valid++;
+		stripe->used++;
 
 		// log("2 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
 		//     lcn, pcn, no, slot, in_raum);
@@ -401,48 +401,67 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 
 			org_stripe =
 				xa_load(&bt->map->stripe_table, org_stripe_no);
+			if (!org_stripe) {
+				pr_err("no org_stripe 0x%llx with org_pcn 0x%llx -- caused by lcn 0x%llx, i %d, lcn+i 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d, larger_chunk %d, chunks_in_shard %d\n",
+				       org_stripe_no, org_pcn, lcn, i, lcn + i,
+				       pcn, no, slot, in_raum, larger_chunk,
+				       chunks_in_shard);
+			}
 			BUG_ON(!org_stripe);
 			org_stripe->data_lcns[org_slot] = BIZA_MAP_INVALID;
 
 			// All data in original stripe is invalid
 			if (--org_stripe->valid == 0) {
-				if (org_stripe->used == bt->params->k) {
-					// log("6 Data update lcn 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d\n",
-					//     lcn, pcn, no, slot, in_raum);
+				if (org_stripe->used ==
+				    bt->params->k *
+					    org_stripe->chunks_in_shard) {
 					for (j = 0; j < bt->params->m; ++j) {
 						// TODO: need to invalidate several PCN mappings when dealing with larger chunks
 						org_parity_pcn =
 							org_stripe
 								->parity_pcns[j];
-						if (!biza_is_valid_pcn(
-							    bt,
-							    org_parity_pcn)) {
-							continue;
+						if (org_stripe->larger_chunk) {
+							original_stripe_max_i =
+								org_stripe
+									->chunks_in_shard;
 						}
-						bt->map->p2l[org_parity_pcn]
-							.chunk_no =
-							BIZA_MAP_INVALID;
-						bt->map->p2l[org_parity_pcn]
-							.stripe_no =
-							BIZA_MAP_INVALID;
-						bt->map->p2l[org_parity_pcn]
-							.slot = (uint8_t)
-							BIZA_MAP_INVALID;
-						if (!bt->map->p2l[org_parity_pcn]
-							     .in_raum) {
-							// pr_err("Inloop Data update lcn: 0x%llx, pcn: 0x%llx, original_pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
-							//        lcn, org_pcn, pcn, no,
-							//        slot, in_raum);
-							if (org_stripe
-								    ->larger_chunk) {
-								original_stripe_max_i =
-									org_stripe
-										->chunks_in_shard;
+						pr_err("Cleaning stripe 0x%llx (org_num_chunks %d, org_stripe->used %d, org_pcn 0x%llx) due to lcn 0x%llx, i %d, lcn+i 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d, larger_chunk %d, chunks_in_shard %d\n",
+						       org_stripe_no,
+						       org_stripe
+							       ->chunks_in_shard,
+						       org_stripe->used,
+						       org_parity_pcn, lcn, i,
+						       lcn + i, pcn, no, slot,
+						       in_raum, larger_chunk,
+						       chunks_in_shard);
+						for (k = 0;
+						     k < original_stripe_max_i;
+						     k++) {
+							if (!biza_is_valid_pcn(
+								    bt,
+								    org_parity_pcn +
+									    k)) {
+								continue;
 							}
-							for (k = 0;
-							     k <
-							     original_stripe_max_i;
-							     k++) {
+							bt->map->p2l[org_parity_pcn +
+								     k]
+								.chunk_no =
+								BIZA_MAP_INVALID;
+							bt->map->p2l[org_parity_pcn +
+								     k]
+								.stripe_no =
+								BIZA_MAP_INVALID;
+							bt->map->p2l[org_parity_pcn +
+								     k]
+								.slot = (uint8_t)
+								BIZA_MAP_INVALID;
+							if (!bt->map->p2l[org_parity_pcn +
+									  k]
+								     .in_raum) {
+								// pr_err("Inloop Data update lcn: 0x%llx, pcn: 0x%llx, original_pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
+								//        lcn, org_pcn, pcn, no,
+								//        slot, in_raum);
+
 								biza_pcn_to_idx(
 									bt,
 									org_parity_pcn +
@@ -472,6 +491,7 @@ void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
 {
 	struct biza_stripe *stripe = NULL;
 	sector_t old_pcn, old_data_start_lcn;
+	uint64_t i;
 	int subslot;
 
 	// TODO: need to update several PCN mappings when dealing with larger chunks
@@ -482,26 +502,32 @@ void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
 	if (!stripe) {
 		BUG_ON(slot);
 		stripe = biza_alloc_stripe(bt, larger_chunk, chunks_in_shard);
-		xa_store(&bt->map->stripe_table, no, stripe, GFP_ATOMIC);
+		xa_store_irq(&bt->map->stripe_table, no, stripe, GFP_ATOMIC);
 		// pr_err("parity creating stripe: 0x%llx\n", no);
 	} else {
 		// Invalidate old entry
-		old_pcn = stripe->parity_pcns[slot];
-
-		// pr_err("Write parity: original: 0x%llx, new: 0x%llx\n", old_pcn, pcn);
-		if (old_pcn != BIZA_MAP_INVALID &&
-		    old_pcn != BIZA_MAP_UNMAPPED) {
-			bt->map->p2l[old_pcn].chunk_no = BIZA_MAP_INVALID;
-			bt->map->p2l[old_pcn].stripe_no = BIZA_MAP_INVALID;
-			bt->map->p2l[old_pcn].slot = (uint8_t)BIZA_MAP_INVALID;
+		for (i = 0; i < stripe->chunks_in_shard; i++) {
+			old_pcn = stripe->parity_pcns[slot] + i;
+			// pr_err("Write parity: original: 0x%llx, new: 0x%llx\n", old_pcn, pcn);
+			if (old_pcn != BIZA_MAP_INVALID &&
+			    old_pcn != BIZA_MAP_UNMAPPED) {
+				bt->map->p2l[old_pcn].chunk_no =
+					BIZA_MAP_INVALID;
+				bt->map->p2l[old_pcn].stripe_no =
+					BIZA_MAP_INVALID;
+				bt->map->p2l[old_pcn].slot =
+					(uint8_t)BIZA_MAP_INVALID;
+			}
 		}
 	}
 
-	// stripe->parity_pcns[slot] == BIZA_MAP_UNMAPPED
-	bt->map->p2l[pcn].chunk_no = BIZA_MAP_PARITY;
-	bt->map->p2l[pcn].stripe_no = no;
-	bt->map->p2l[pcn].slot = slot;
-	bt->map->p2l[pcn].in_raum = in_raum;
+	for (i = 0; i < chunks_in_shard; i++) {
+		// stripe->parity_pcns[slot] == BIZA_MAP_UNMAPPED
+		bt->map->p2l[pcn + i].chunk_no = BIZA_MAP_PARITY;
+		bt->map->p2l[pcn + i].stripe_no = no;
+		bt->map->p2l[pcn + i].slot = slot;
+		bt->map->p2l[pcn + i].in_raum = in_raum;
+	}
 
 	stripe->parity_pcns[slot] = pcn;
 }
