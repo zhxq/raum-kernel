@@ -114,9 +114,9 @@ void biza_flush_big_chunk(struct biza_target *bt,
 	wp = biza_flush_raum_area(bt, drive_idx, zone_idx, wp, size,
 				  big_chunk->start_sector);
 	append_pcn_base = biza_sector_to_pcn(bt, drive_idx, wp);
-	pr_err("Flushed loc: big_chunk start pcn 0x%llx, drive_idx: %u, zone_idx %u, target wp: 0x%llx, size 0x%llx, base 0x%llx\n",
-	       big_chunk->start_pcn, drive_idx, zone_idx, wp, size,
-	       append_pcn_base);
+	log("Flushed loc: big_chunk start pcn 0x%llx, drive_idx: %u, zone_idx %u, target wp: 0x%llx, size 0x%llx, base 0x%llx\n",
+	    big_chunk->start_pcn, drive_idx, zone_idx, wp, size,
+	    append_pcn_base);
 	for (i = 0; i < RAUM_BIG_CHUNK_PAGES; i++) {
 		pcn = append_pcn_base + i;
 		if (!biza_is_valid_pcn(bt, pcn)) {
@@ -156,16 +156,18 @@ void biza_flush_big_chunk(struct biza_target *bt,
 				}
 				stripe->parity_pcns[chunkioctx->slot] = pcn;
 				local_irq_restore(flags);
-				sh = xa_load(&bt->fshc, stripe_no);
-				// pr_err("pcn 0x%llx sh 0x%px\n", pcn, sh);
-				if (sh) {
-					// pr_err("!!Free parity buffer, pcn=0x%llx, sh->parity_cache=0x%px\n", pcn, sh->parity_cache);
-					xa_erase_irq(&bt->fshc, stripe_no);
-					biza_free_stripe_head(bt, sh);
-				}
+
+				// TODO: clean sh when all sh data/parity are in flash
+				// sh = xa_load(&bt->fshc, stripe_no);
+				// // pr_err("pcn 0x%llx sh 0x%px\n", pcn, sh);
+				// if (sh) {
+				// 	// pr_err("!!Free parity buffer, pcn=0x%llx, sh->parity_cache=0x%px\n", pcn, sh->parity_cache);
+				// 	xa_erase_irq(&bt->fshc, stripe_no);
+				// 	biza_free_stripe_head(bt, sh);
+				// }
 			} else {
-				pr_err("Failed to find stripe 0x%llx, old_pcn 0x%llx\n",
-				       stripe_no, old_pcn);
+				log("Failed to find stripe 0x%llx, old_pcn 0x%llx\n",
+				    stripe_no, old_pcn);
 			}
 
 		} else {
@@ -206,8 +208,8 @@ void biza_flush_big_chunk(struct biza_target *bt,
 				// pr_err("!!Free data buffer, drive_idx %u, zone_idx %u, offset 0x%llx, pointer: 0x%px\n", drive_idx, zone_idx, wp_off, data_buffer);
 				biza_mempool_free(&bt->dcpool, data_buffer);
 			} else {
-				pr_err("Hitting an invalidated RAUM data page @old_lcn = 0x%llx, old_pcn = 0x%llx.\n",
-				       old_lcn, old_pcn);
+				log("Hitting an invalidated RAUM data page @old_lcn = 0x%llx, old_pcn = 0x%llx.\n",
+				    old_lcn, old_pcn);
 			}
 		}
 	}
@@ -1942,7 +1944,9 @@ static void stripe_head_endio(biza_stripe_head_t *sh)
 		/** Add to another list. Release until ZRWA window has slided left. **/
 		sh->ioctx = NULL;
 		log("store shno 0x%llx to fshc\n", sh->no);
-		xa_store_irq(&bt->fshc, sh->no, sh, GFP_ATOMIC);
+		if (!sh->larger_chunk) {
+			xa_store_irq(&bt->fshc, sh->no, sh, GFP_ATOMIC);
+		}
 	} else {
 		// May deadlock without _IRQ?
 		log("store shno 0x%llx to pshl\n", sh->no);

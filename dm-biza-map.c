@@ -425,15 +425,14 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 								org_stripe
 									->chunks_in_shard;
 						}
-						pr_err("Cleaning stripe 0x%llx (org_num_chunks %d, org_stripe->used %d, org_pcn 0x%llx) due to lcn 0x%llx, i %d, lcn+i 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d, larger_chunk %d, chunks_in_shard %d\n",
-						       org_stripe_no,
-						       org_stripe
-							       ->chunks_in_shard,
-						       org_stripe->used,
-						       org_parity_pcn, lcn, i,
-						       lcn + i, pcn, no, slot,
-						       in_raum, larger_chunk,
-						       chunks_in_shard);
+						log("Cleaning stripe 0x%llx (org_num_chunks %d, org_stripe->used %d, org_pcn 0x%llx) due to lcn 0x%llx, i %d, lcn+i 0x%llx, pcn 0x%llx, shno 0x%llx, slot %u, in_raum %d, larger_chunk %d, chunks_in_shard %d\n",
+						    org_stripe_no,
+						    org_stripe->chunks_in_shard,
+						    org_stripe->used,
+						    org_parity_pcn, lcn, i,
+						    lcn + i, pcn, no, slot,
+						    in_raum, larger_chunk,
+						    chunks_in_shard);
 						for (k = 0;
 						     k < original_stripe_max_i;
 						     k++) {
