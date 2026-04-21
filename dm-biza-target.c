@@ -1677,10 +1677,12 @@ static bool biza_get_zone_write_location(struct biza_target *bt,
 		down_read(&dev->ozlock);
 		*zone_idx = dev->open_zones[oz_idx];
 		zone = &dev->zones[*zone_idx];
-		while (zone->cond == BLK_ZONE_COND_FULL) {
+		if (zone->cond == BLK_ZONE_COND_FULL) {
 			up_read(&dev->ozlock);
-			udelay(1);
 			pr_err("Zone %u is full\n", *zone_idx);
+			udelay(1);
+			cpu_relax();
+			cond_resched();
 			continue;
 		}
 

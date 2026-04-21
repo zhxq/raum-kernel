@@ -557,37 +557,9 @@ uint8_t biza_choose_open_zone_to_write(struct biza_target *bt,
 		oz_idx = biza_get_oz_idx_gc_avoid(bt, dev, ozg_idx);
 		break;
 	case BIZA_LIFETIME_AWARE:
-		if (bt->max_dist_lfta_set < bt->min_dist_lfta_set) {
-			ozg_idx = (dev->nr_zrwa_aware_open_zones +
-				   get_random_u32() %
-					   dev->nr_lifetime_aware_open_zones) /
-				  BIZA_NR_ISOLATION_DOMAIN;
-			oz_idx = biza_get_oz_idx_gc_avoid(bt, dev, ozg_idx);
-		} else {
-			interval = (bt->max_dist_lfta_set -
-				    bt->min_dist_lfta_set) /
-				   (dev->nr_lifetime_aware_open_zones /
-				    BIZA_NR_ISOLATION_DOMAIN);
-			if (interval == 0) {
-				ozg_idx =
-					(dev->nr_zrwa_aware_open_zones +
-					 get_random_u32() %
-						 dev->nr_lifetime_aware_open_zones) /
-					BIZA_NR_ISOLATION_DOMAIN;
-			} else {
-				ozg_idx = (dev->nr_zrwa_aware_open_zones /
-					   BIZA_NR_ISOLATION_DOMAIN) +
-					  (pred_etr->reuse_dist -
-					   bt->min_dist_lfta_set) /
-						  interval;
-				ozg_idx = min(
-					ozg_idx,
-					(uint8_t)((dev->nr_zrwa_aware_open_zones +
-						   dev->nr_lifetime_aware_open_zones) /
-						  BIZA_NR_ISOLATION_DOMAIN));
-			}
-			oz_idx = biza_get_oz_idx_gc_avoid(bt, dev, ozg_idx);
-		}
+		ozg_idx = (get_random_u32() % dev->nr_zrwa_aware_open_zones) /
+			  BIZA_NR_ISOLATION_DOMAIN;
+		oz_idx = biza_get_oz_idx_gc_avoid(bt, dev, ozg_idx);
 		break;
 	case BIZA_TRIVIAL:
 		ozg_idx = (dev->nr_zrwa_aware_open_zones +

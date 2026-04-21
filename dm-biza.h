@@ -65,9 +65,9 @@
 
 #define ZONE_GET_WPTR_FAIL_DELAY 5 // in usec
 #define NR_ZRWA_AWARE_OPEN_ZONES \
-	2 // try to use ZRWA for reducing invalid chunks (reduce GC)
+	6 // try to use ZRWA for reducing invalid chunks (reduce GC)
 #define NR_LIFETIME_AWARE_OPEN_ZONES \
-	4 // try to cluster chunks with similar lifetime for GC reducing
+	0 // try to cluster chunks with similar lifetime for GC reducing
 #define NR_TRIVIAL_OPEN_ZONES 6
 #define NR_GC_OPEN_ZONES 2
 
