@@ -1680,7 +1680,7 @@ static bool biza_get_zone_write_location(struct biza_target *bt,
 		while (zone->cond == BLK_ZONE_COND_FULL) {
 			up_read(&dev->ozlock);
 			udelay(1);
-			pr_err("Zone %u is full\n", zone_idx);
+			pr_err("Zone %u is full\n", *zone_idx);
 			continue;
 		}
 
