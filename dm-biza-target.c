@@ -603,6 +603,7 @@ static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	atomic64_set(&bt->user_read, 0);
 	atomic64_set(&bt->data_write, 0);
 	atomic64_set(&bt->gc_write, 0);
+	atomic64_set(&bt->num_chunks, 0);
 	atomic64_set(&bt->parity_write, 0);
 	atomic64_set(&bt->oop_parity_write, 0);
 	atomic64_set(&bt->data_in_place_update, 0);
@@ -1389,6 +1390,9 @@ static int biza_submit_stripe_head_write(struct biza_target *bt, struct bio *bio
 	uint64_t time;
 
 	BUG_ON(shioctx == NULL);
+
+	if (WRITE_AMP_STAT)
+		atomic64_add(chunk_cnt, &bt->num_chunks);
 
 	// send data chunk I/O
 	for (i = 0; i < chunk_cnt; ++i)
