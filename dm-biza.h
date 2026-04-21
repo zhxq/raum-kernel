@@ -502,12 +502,16 @@ struct biza_target {
 
 	// statistics for write amplification (in sector, i.e., 512B)
 	atomic64_t user_send;
+	atomic64_t user_read;
 	atomic64_t data_write;
+	atomic64_t gc_write;
 	atomic64_t parity_write;
 	atomic64_t data_in_place_update;
 	atomic64_t parity_in_place_update;
 	atomic64_t data_flush;
 	atomic64_t parity_flush;
+
+	atomic64_t previous_print_time;
 };
 
 // ctx for each bio on biza

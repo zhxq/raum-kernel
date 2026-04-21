@@ -1190,10 +1190,16 @@ static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	// statistics for write amplification
 	atomic64_set(&bt->user_send, 0);
+	atomic64_set(&bt->user_read, 0);
 	atomic64_set(&bt->data_write, 0);
+	atomic64_set(&bt->gc_write, 0);
 	atomic64_set(&bt->parity_write, 0);
 	atomic64_set(&bt->data_in_place_update, 0);
 	atomic64_set(&bt->parity_in_place_update, 0);
+	atomic64_set(&bt->data_flush, 0);
+	atomic64_set(&bt->parity_flush, 0);
+
+	atomic64_set(&bt->previous_print_time, ktime_get_boottime_ns());
 
 	// Settings for block device layer
 	ti->per_io_data_size = sizeof(struct biza_bioctx);
@@ -3107,6 +3113,9 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 
 	left = bio_sectors(bio);
 	// pr_err("Got read: 0x%llx %llu sectors\n", left, left);
+
+	if (WRITE_AMP_STAT)
+		atomic64_add(left, &bt->user_read);
 
 	while (left > 0) {
 		cur_sec = bio->bi_iter.bi_sector;
