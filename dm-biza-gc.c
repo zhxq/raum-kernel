@@ -207,14 +207,14 @@ int biza_do_gc(struct biza_target *bt)
 	uint8_t victim_drive_idx;
 	uint32_t victim_zone_idx;
 	int ret = 0;
-	pr_err("Doing GC... out\n");
+	log("Doing GC... out\n");
 	ret = biza_select_victim(bt, &victim_drive_idx, &victim_zone_idx);
 	if (ret) {
-		pr_err("Doing GC... in\n");
+		log("Doing GC... in\n");
 		biza_gc_move_valid_data(bt, victim_drive_idx, victim_zone_idx);
 		biza_reset_zone(bt, &bt->devs[victim_drive_idx],
 				victim_zone_idx, false);
-		pr_err("Finished GC... in\n");
+		log("Finished GC... in\n");
 	}
 
 	return 0;
@@ -260,12 +260,12 @@ static void biza_gc_work(struct work_struct *work)
 	}
 
 	if (!biza_should_gc(bt)) {
-		pr_err("No GC!!!!\n");
+		log("No GC!!!!\n");
 		mod_delayed_work(gc->wq, &gc->work, BIZA_GC_DETECT_PERIOD);
 		return;
 	}
 
-	pr_err("Now should do GC!\n");
+	log("Now should do GC!\n");
 
 	/** GC throttle **/
 	if (biza_target_idle(bt) || bt->gc->p_free_zones < bt->gc_limit_low) {
