@@ -3113,7 +3113,11 @@ static int biza_submit_chunk_read(struct biza_target *bt, struct bio *bio,
 static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 {
 	sector_t cur_sec, nxt_sec, size, left;
-	sector_t lcn, pcn, temp_lcn, temp_pcn;
+	sector_t lcn, pcn, temp_lcn, temp_pcn, start_lcn, end_lcn;
+	biza_raum_big_chunk_t *big_chunk;
+	sector_t raum_lcns[RAUM_BIG_CHUNK_PAGES];
+	bool data_in_raum = false;
+	int raum_lcns_len = 0;
 	int ret;
 	int i;
 
@@ -3124,6 +3128,7 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 		atomic64_add(left, &bt->user_read);
 
 	while (left > 0) {
+		data_in_raum = false;
 		cur_sec = bio->bi_iter.bi_sector;
 		// e.g., chunk = 128 sec, 0->128, 32->128
 		nxt_sec = min(round_up(cur_sec + 1,
@@ -3133,6 +3138,20 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 
 		lcn = cur_sec >> bt->params->chunk_size_sector_shift;
 		pcn = biza_map_lcn_lookup_pcn(bt, lcn);
+
+		if (biza_is_data_in_raum(bt, lcn)) {
+			data_in_raum = true;
+			big_chunk = biza_find_big_chunk_by_pcn(bt, pcn);
+			atomic64_inc(&big_chunk->updates_in_flight);
+			if (atomic64_read(&big_chunk->flush_in_flight)) {
+				atomic64_dec(&big_chunk->updates_in_flight);
+				while (atomic64_read(
+					&big_chunk->flush_in_flight)) {
+					cpu_relax();
+				}
+			}
+			goto read;
+		}
 
 		for (i = 1;; i++) {
 			temp_lcn = lcn + i;
@@ -3161,10 +3180,16 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 			}
 		}
 
+read:
 		ret = biza_submit_chunk_read(bt, bio, lcn, pcn, size);
 		if (ret) {
 			pr_err("dm-biza: io error: cannot submit chunk read");
 			return -EIO;
+		}
+
+		if (data_in_raum) {
+			big_chunk = biza_find_big_chunk_by_pcn(bt, pcn);
+			atomic64_dec(&big_chunk->updates_in_flight);
 		}
 
 		left = bio_sectors(bio);

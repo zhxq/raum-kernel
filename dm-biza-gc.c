@@ -167,6 +167,10 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 			// dst_offset = (atomic64_read(&dst_zone->wp) - dst_zone->start) >> bt->params->chunk_size_sector_shift;
 			dst_pcn = biza_idx_to_pcn(bt, dst_drive_idx,
 						  dst_zone_idx, dst_offset);
+			// TODO: add something like prev_stripe
+			// and see if current page is from the same stripe
+			// If so, then only update one stripe->parity_pcns or bt->map->l2p[lcn].chunk_no
+			// Maybe a counter is needed to count the number of pages
 			biza_map_remap(bt, src_pcn, dst_pcn);
 
 			wait_on_bit_io(&bt->gc->flags, BIZA_GC_KCOPY,
@@ -193,6 +197,7 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 				biza_gc_tag_isolation_domain(bt, dst_drive_idx,
 							     dst_zone_idx,
 							     BIZA_GC_DST);
+				dst_zone->wp += bt->params->chunk_size_sector;
 			}
 		}
 	}
