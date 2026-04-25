@@ -533,7 +533,8 @@ void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
 
 // update map after data/parity moving
 // Note that the data/parity storing in src_pcn and dst_pcn should be the same
-void biza_map_remap(struct biza_target *bt, sector_t src_pcn, sector_t dst_pcn)
+void biza_map_remap(struct biza_target *bt, sector_t src_pcn, sector_t dst_pcn,
+		    struct xarray *parity_pcn)
 {
 	sector_t lcn;
 	uint64_t stripe_no;
@@ -544,6 +545,8 @@ void biza_map_remap(struct biza_target *bt, sector_t src_pcn, sector_t dst_pcn)
 	uint8_t read_drive_idx = 0, passed_drive_idx = 0;
 	uint32_t read_zone_idx = 0, passed_zone_idx = 0;
 	uint64_t read_offset = 0, passed_offset = 0;
+	void *entry = NULL;
+	uint64_t new_parity_start = 0;
 
 	lcn = bt->map->p2l[src_pcn].chunk_no;
 	// be modified while GC
@@ -568,23 +571,35 @@ void biza_map_remap(struct biza_target *bt, sector_t src_pcn, sector_t dst_pcn)
 			       read_offset, src_pcn, passed_drive_idx,
 			       passed_zone_idx, passed_offset);
 		} else {
-			if (stripe->parity_pcns[slot] != src_pcn) {
-				pr_err("mismatch src_pcn -- lcn: 0x%llx, src pcn: 0x%llx, current slot pcn: 0x%llx, dst pcn: 0x%llx, stripe_no: 0x%llx, slot: 0x%x\n",
-				       lcn, src_pcn, stripe->parity_pcns[slot],
-				       dst_pcn, stripe_no, slot);
-				biza_pcn_to_idx(bt, stripe->parity_pcns[slot],
+			entry = xa_load(parity_pcn, stripe_no);
+			if (xa_is_value(entry)) {
+				new_parity_start = xa_to_value(entry);
+			} else {
+				xa_store(parity_pcn, stripe_no,
+					 xa_mk_value(dst_pcn), GFP_ATOMIC);
+				new_parity_start = dst_pcn;
+				if (stripe->parity_pcns[slot] != src_pcn) {
+					pr_err("mismatch src_pcn -- lcn: 0x%llx, src pcn: 0x%llx, current slot pcn: 0x%llx, dst pcn: 0x%llx, stripe_no: 0x%llx, slot: 0x%x\n",
+					       lcn, src_pcn,
+					       stripe->parity_pcns[slot],
+					       dst_pcn, stripe_no, slot);
+					biza_pcn_to_idx(
+						bt, stripe->parity_pcns[slot],
 						&read_drive_idx, &read_zone_idx,
 						&read_offset);
-				biza_pcn_to_idx(bt, src_pcn, &passed_drive_idx,
-						&passed_zone_idx,
-						&passed_offset);
-				pr_err("read: src_pcn: 0x%llx, drive_idx: %u, zone_idx: %u, offset: 0x%llx; passed: src_pcn: 0x%llx, drive_idx: %u, zone_idx: %u, offset: 0x%llx\n",
-				       stripe->parity_pcns[slot],
-				       read_drive_idx, read_zone_idx,
-				       read_offset, src_pcn, passed_drive_idx,
-				       passed_zone_idx, passed_offset);
+					biza_pcn_to_idx(bt, src_pcn,
+							&passed_drive_idx,
+							&passed_zone_idx,
+							&passed_offset);
+					pr_err("read: src_pcn: 0x%llx, drive_idx: %u, zone_idx: %u, offset: 0x%llx; passed: src_pcn: 0x%llx, drive_idx: %u, zone_idx: %u, offset: 0x%llx\n",
+					       stripe->parity_pcns[slot],
+					       read_drive_idx, read_zone_idx,
+					       read_offset, src_pcn,
+					       passed_drive_idx,
+					       passed_zone_idx, passed_offset);
+				}
 			}
-			stripe->parity_pcns[slot] = dst_pcn;
+			stripe->parity_pcns[slot] = new_parity_start;
 			// pr_err("Remap parity: original: 0x%llx, new: 0x%llx\n", src_pcn, dst_pcn);
 		}
 

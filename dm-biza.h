@@ -618,7 +618,8 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
 				uint64_t no, uint8_t slot, bool in_raum,
 				bool larger_chunk, uint64_t chunks_in_shard);
-void biza_map_remap(struct biza_target *bt, sector_t src_pcn, sector_t dst_pcn);
+void biza_map_remap(struct biza_target *bt, sector_t src_pcn, sector_t dst_pcn,
+		    struct xarray *parity_pcn);
 
 /** Functions defined in dm-biza-ds.c **/
 enum biza_aware_type biza_check_aware_type(struct biza_target *bt,

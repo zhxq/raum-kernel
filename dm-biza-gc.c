@@ -119,7 +119,9 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 	uint64_t src_pcn, dst_pcn;
 	struct dm_io_region src, dst;
 	ulong flags = 0;
+	struct xarray parity_pcns; // Key: stripe ID, value: new PCN
 
+	xa_init(&parity_pcns);
 	src_dev = &bt->devs[src_drive_idx];
 	src_zone = &src_dev->zones[src_zone_idx];
 	biza_gc_choose_dst_zone(bt, &dst_drive_idx, &dst_zone_idx, &dst_oz_idx);
@@ -171,7 +173,7 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 			// and see if current page is from the same stripe
 			// If so, then only update one stripe->parity_pcns or bt->map->l2p[lcn].chunk_no
 			// Maybe a counter is needed to count the number of pages
-			biza_map_remap(bt, src_pcn, dst_pcn);
+			biza_map_remap(bt, src_pcn, dst_pcn, &parity_pcns);
 
 			wait_on_bit_io(&bt->gc->flags, BIZA_GC_KCOPY,
 				       TASK_UNINTERRUPTIBLE);
@@ -201,6 +203,8 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 			}
 		}
 	}
+
+	xa_destroy(&parity_pcns);
 
 	biza_gc_untag_isolation_domain(bt, dst_drive_idx, dst_zone_idx);
 	biza_gc_untag_isolation_domain(bt, src_drive_idx, src_zone_idx);
