@@ -159,6 +159,8 @@ struct biza_zone {
 	atomic64_t finished_ios;
 
 	spinlock_t zlock;
+
+	struct mutex gc_lock;
 };
 
 typedef enum biza_iso_dm_state {

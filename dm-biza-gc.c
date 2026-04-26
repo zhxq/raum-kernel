@@ -118,7 +118,8 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 	uint64_t src_offset, dst_offset;
 	uint64_t src_pcn, dst_pcn;
 	struct dm_io_region src, dst;
-	ulong flags = 0;
+	ulong flags = 0, barrier = 0;
+	struct biza_gc gc_ctx;
 	struct xarray parity_pcns; // Key: stripe ID, value: new PCN
 
 	xa_init(&parity_pcns);
@@ -127,6 +128,8 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 	biza_gc_choose_dst_zone(bt, &dst_drive_idx, &dst_zone_idx, &dst_oz_idx);
 	dst_dev = &bt->devs[dst_drive_idx];
 	dst_zone = &dst_dev->zones[dst_zone_idx];
+
+	mutex_lock(&dst_zone->gc_lock);
 
 	pr_err("GC source dev: %u, zone: %u; dest dev: %u, zone: %u\n",
 	       src_drive_idx, src_zone_idx, dst_drive_idx, dst_zone_idx);
@@ -160,9 +163,9 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 				atomic64_add(bt->params->chunk_size_sector,
 					     &bt->gc_write);
 
-			set_bit(BIZA_GC_KCOPY, &bt->gc->flags);
+			set_bit(BIZA_GC_KCOPY, &(gc_ctx.flags));
 			dm_kcopyd_copy(bt->gc->kc, &src, 1, &dst, flags,
-				       bt_gc_kcopy_end, bt->gc);
+				       bt_gc_kcopy_end, &gc_ctx);
 
 			dst_offset = (dst_zone->wp - dst_zone->start) >>
 				     bt->params->chunk_size_sector_shift;
@@ -173,10 +176,10 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 			// and see if current page is from the same stripe
 			// If so, then only update one stripe->parity_pcns or bt->map->l2p[lcn].chunk_no
 			// Maybe a counter is needed to count the number of pages
+			wait_on_bit_io(&(gc_ctx.flags), BIZA_GC_KCOPY,
+				       TASK_UNINTERRUPTIBLE);
 			biza_map_remap(bt, src_pcn, dst_pcn, &parity_pcns);
 
-			wait_on_bit_io(&bt->gc->flags, BIZA_GC_KCOPY,
-				       TASK_UNINTERRUPTIBLE);
 			BUG_ON(bt->gc->kc_err);
 
 			dst_zone->wp += bt->params->chunk_size_sector;
@@ -187,6 +190,7 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 				dst_zone->cond = BLK_ZONE_COND_FULL;
 				biza_gc_untag_isolation_domain(
 					bt, dst_drive_idx, dst_zone_idx);
+				mutex_unlock(&dst_zone->gc_lock);
 				biza_finish_zone(bt, dst_dev, dst_zone_idx);
 				dst_dev->open_zones[dst_oz_idx] =
 					biza_open_empty_zone(bt, dst_dev, false,
@@ -196,6 +200,7 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 					BUG_ON(1);
 				dst_zone_idx = dst_dev->open_zones[dst_oz_idx];
 				dst_zone = &dst_dev->zones[dst_zone_idx];
+				mutex_lock(&dst_zone->gc_lock);
 				biza_gc_tag_isolation_domain(bt, dst_drive_idx,
 							     dst_zone_idx,
 							     BIZA_GC_DST);
@@ -203,6 +208,8 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 			}
 		}
 	}
+
+	mutex_unlock(&dst_zone->gc_lock);
 
 	xa_destroy(&parity_pcns);
 
