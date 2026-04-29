@@ -531,7 +531,8 @@ enum biza_aware_type biza_check_aware_type(struct biza_target *bt,
  * Choose a open zone, return its open zone idx (instead of zone idx)
  */
 uint8_t biza_choose_open_zone_to_write(struct biza_target *bt,
-				       uint8_t drive_idx, uint32_t hint)
+				       uint8_t drive_idx,
+				       enum biza_aware_type aware_type)
 {
 	struct biza_htable_entry *tb_etr = NULL;
 	struct biza_pred_entry *pred_etr = NULL;
@@ -539,16 +540,16 @@ uint8_t biza_choose_open_zone_to_write(struct biza_target *bt,
 	uint32_t interval;
 	uint8_t ozg_idx, oz_idx;
 
-	enum biza_aware_type aware_type;
+	// enum biza_aware_type aware_type;
 
-	mutex_lock(&bt->pred_lock);
-	tb_etr = biza_htable_find(bt, hint);
-	if (tb_etr) {
-		pred_etr = tb_etr->pred_entry;
-		aware_type = pred_etr->aware_type;
-	} else {
-		aware_type = BIZA_TRIVIAL;
-	}
+	// mutex_lock(&bt->pred_lock);
+	// tb_etr = biza_htable_find(bt, hint);
+	// if (tb_etr) {
+	// 	pred_etr = tb_etr->pred_entry;
+	// 	aware_type = pred_etr->aware_type;
+	// } else {
+	// 	aware_type = BIZA_TRIVIAL;
+	// }
 
 	switch (aware_type) {
 	case BIZA_ZRWA_AWARE:

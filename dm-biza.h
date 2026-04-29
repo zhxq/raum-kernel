@@ -565,7 +565,8 @@ struct biza_stripe_head_ioctx *
 biza_alloc_stripe_head_ioctx(struct biza_target *bt, uint8_t data_wrt_cnt);
 int biza_finish_zone(struct biza_target *bt, struct biza_dev *dev,
 		     uint32_t zone_idx);
-inline void biza_get_write_location(struct biza_target *bt, uint64_t hint,
+inline void biza_get_write_location(struct biza_target *bt,
+				    enum biza_aware_type hint,
 				    uint8_t drive_idx, uint32_t *zone_idx,
 				    uint64_t *offset, sector_t size);
 void biza_free_stripe_head(struct biza_target *bt, biza_stripe_head_t *sh);
@@ -630,7 +631,8 @@ int biza_ctr_pred(struct biza_target *bt);
 void biza_dtr_pred(struct biza_target *bt);
 void biza_update_pred(struct biza_target *bt, sector_t lcn);
 uint8_t biza_choose_open_zone_to_write(struct biza_target *bt,
-				       uint8_t drive_idx, uint32_t hint);
+				       uint8_t drive_idx,
+				       enum biza_aware_type aware_type);
 sector_t biza_round_chunk_no(sector_t chunk_no);
 
 int biza_do_gc_on_drive(struct biza_target *bt, uint8_t drive);

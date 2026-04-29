@@ -106,7 +106,7 @@ void biza_flush_big_chunk(struct biza_target *bt,
 	sector_t size = RAUM_BIG_CHUNK_PAGES * bt->params->chunk_size_sector;
 	BUG_ON(!big_chunk);
 	BUG_ON(big_chunk->chunk_count != RAUM_BIG_CHUNK_PAGES);
-	biza_get_write_location(bt, big_chunk->start_pcn, drive_idx, &zone_idx,
+	biza_get_write_location(bt, BIZA_ZRWA_AWARE, drive_idx, &zone_idx,
 				&offset, size);
 	wp = biza_idx_to_sector(bt, drive_idx, zone_idx, raid_offset, true);
 	log("Flushing loc: big_chunk start pcn 0x%llx, drive_idx: %u, zone_idx %u, target wp: 0x%llx, size 0x%llx\n",
@@ -1708,7 +1708,8 @@ static bool biza_get_zone_write_location(struct biza_target *bt,
 }
 
 // Get a write location in a zone, size in sectors
-inline void biza_get_write_location(struct biza_target *bt, uint64_t hint,
+inline void biza_get_write_location(struct biza_target *bt,
+				    enum biza_aware_type hint,
 				    uint8_t drive_idx, uint32_t *zone_idx,
 				    uint64_t *offset, sector_t size)
 {
@@ -2011,8 +2012,9 @@ void biza_chunkio_endio(struct bio *chunkio)
 			// pr_err("dm-biza: io failed! io_type %d, bi_status %d, offset %lld, sectors %u",
 			//        bio_op(chunkio), status, chunkio->bi_iter.bi_sector,
 			//        bio_sectors(chunkio));
-			pr_err("dm-biza: io failed! bi_status %u lcn: 0x%llx, io_type %d, bi_status %d, offset 0x%llx, sectors %u\n",
-			       status, chunkioctx->lcn, bio_op(chunkio), status,
+			pr_err("dm-biza: io failed! bi_status %u lcn: 0x%llx, pcn: 0x%llx, io_type %d, bi_status %d, offset 0x%llx, sectors %u\n",
+			       status, chunkioctx->lcn, chunkioctx->pcn,
+			       bio_op(chunkio), status,
 			       chunkio->bi_iter.bi_sector,
 			       bio_sectors(chunkio));
 
@@ -2341,8 +2343,9 @@ biza_submit_stripe_head_write(struct biza_target *bt, struct bio *bio,
 			if (larger_chunk) {
 				data_in_raum = false;
 				bdev = bt->devs[drive_idx].dev->bdev;
-				biza_get_write_location(bt, lcn, drive_idx,
-							&zone_idx, &offset,
+				biza_get_write_location(bt, BIZA_TRIVIAL,
+							drive_idx, &zone_idx,
+							&offset,
 							sectors_in_shard);
 				pcn = biza_idx_to_pcn(bt, drive_idx, zone_idx,
 						      offset);
@@ -2671,8 +2674,9 @@ biza_submit_stripe_head_write(struct biza_target *bt, struct bio *bio,
 			log("larger chunk parity write\n");
 			drive_idx = (sh->no + i) % bt->params->nr_drives;
 			big_chunk = big_chunks[drive_idx];
-			biza_get_write_location(bt, lcn, drive_idx, &zone_idx,
-						&offset, sectors_in_shard);
+			biza_get_write_location(bt, BIZA_TRIVIAL, drive_idx,
+						&zone_idx, &offset,
+						sectors_in_shard);
 			pcn = biza_idx_to_pcn(bt, drive_idx, zone_idx, offset);
 			bi_sector = biza_idx_to_sector(bt, drive_idx, zone_idx,
 						       offset, true);
@@ -2865,7 +2869,10 @@ static int biza_handle_data_in_place_update(struct biza_target *bt,
 	pcn = biza_map_lcn_lookup_pcn(bt, lcn);
 
 	org_data = xa_load(&bt->dc, pcn);
-	BUG_ON(!org_data);
+	if (unlikely(!org_data)) {
+		pr_err("no org data @ lcn: 0x%llx, pcn: 0x%llx\n", lcn, pcn);
+		BUG_ON(!org_data);
+	}
 
 	if (!sh->ioctx)
 		BUG_ON(1);
@@ -2987,24 +2994,24 @@ static int biza_handle_write(struct biza_target *bt, struct bio *bio)
 		// TODO: A lock in biza_data_update_get_sh is usually deadlocked
 		// Not sure why
 
-		// if (biza_is_data_in_raum(bt, cur_lcn)) {
-		// 	log("2 performing In-place update lcn 0x%llx, pcn 0x%llx\n",
-		// 	    cur_lcn, bt->map->l2p[cur_lcn].chunk_no);
-		// 	sh = biza_data_update_get_sh(bt, cur_lcn);
-		// 	if (sh &&
-		// 	    biza_can_raum_data_update_in_place(bt, cur_lcn)) {
-		// 		log("Found sh!!!\n");
-		// 		ret = biza_handle_data_in_place_update(
-		// 			bt, bio, sh, big_chunks);
-		// 		if (ret)
-		// 			return -EIO;
-		// 		left = bio_sectors(bio) >>
-		// 		       bt->params->chunk_size_sector_shift;
-		// 		continue;
-		// 	} else {
-		// 		log("2 sh not found\n");
-		// 	}
-		// }
+		if (biza_is_data_in_raum(bt, cur_lcn)) {
+			log("2 performing In-place update lcn 0x%llx, pcn 0x%llx\n",
+			    cur_lcn, bt->map->l2p[cur_lcn].chunk_no);
+			sh = biza_data_update_get_sh(bt, cur_lcn);
+			if (sh &&
+			    biza_can_raum_data_update_in_place(bt, cur_lcn)) {
+				log("Found sh!!!\n");
+				ret = biza_handle_data_in_place_update(
+					bt, bio, sh, big_chunks);
+				if (ret)
+					return -EIO;
+				left = bio_sectors(bio) >>
+				       bt->params->chunk_size_sector_shift;
+				continue;
+			} else {
+				log("2 sh not found\n");
+			}
+		}
 		chunk_cnt = 0;
 
 		while (chunk_cnt < left && chunk_cnt < bt->params->k) {

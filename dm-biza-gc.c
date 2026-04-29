@@ -122,6 +122,10 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 	struct biza_gc gc_ctx;
 	struct xarray parity_pcns; // Key: stripe ID, value: new PCN
 
+	uint64_t stripe_no;
+	struct biza_stripe *stripe = NULL;
+	sector_t chunk_size_sectors = 0;
+
 	xa_init(&parity_pcns);
 	src_dev = &bt->devs[src_drive_idx];
 	src_zone = &src_dev->zones[src_zone_idx];
@@ -155,6 +159,39 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 							src_offset, false);
 			src.count = bt->params->chunk_size_sector;
 
+			stripe_no = bt->map->p2l[src_pcn].stripe_no;
+			stripe = xa_load(&bt->map->stripe_table, stripe_no);
+			if (!stripe) {
+				continue;
+			}
+
+			// Check chunk size (how many pages/sectors?)
+			// We need all pages in a chunk in the same zone (and consecutive)
+			chunk_size_sectors = bt->params->chunk_size_sector *
+					     stripe->chunks_in_shard;
+
+			if (unlikely(dst_zone->wp + chunk_size_sectors >=
+				     dst_zone->start + dst_zone->capacity)) {
+				// if(atomic64_read(&dst_zone->wp) >= dst_zone->start + dst_zone->capacity) {
+				dst_zone->cond = BLK_ZONE_COND_FULL;
+				biza_gc_untag_isolation_domain(
+					bt, dst_drive_idx, dst_zone_idx);
+				mutex_unlock(&dst_zone->gc_lock);
+				biza_finish_zone(bt, dst_dev, dst_zone_idx);
+				dst_dev->open_zones[dst_oz_idx] =
+					biza_open_empty_zone(bt, dst_dev, false,
+							     BIZA_GC);
+				if (dst_dev->open_zones[dst_oz_idx] ==
+				    dst_dev->nr_zones)
+					BUG_ON(1);
+				dst_zone_idx = dst_dev->open_zones[dst_oz_idx];
+				dst_zone = &dst_dev->zones[dst_zone_idx];
+				mutex_lock(&dst_zone->gc_lock);
+				biza_gc_tag_isolation_domain(bt, dst_drive_idx,
+							     dst_zone_idx,
+							     BIZA_GC_DST);
+			}
+
 			dst.bdev = dst_dev->dev->bdev;
 			dst.sector = dst_zone->wp;
 			dst.count = bt->params->chunk_size_sector;
@@ -180,32 +217,10 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 				       TASK_UNINTERRUPTIBLE);
 			biza_map_remap(bt, src_pcn, dst_pcn, &parity_pcns);
 
-			BUG_ON(bt->gc->kc_err);
-
 			dst_zone->wp += bt->params->chunk_size_sector;
+
+			BUG_ON(bt->gc->kc_err);
 			// atomic64_add(bt->params->chunk_size_sector, &dst_zone->wp);
-			if (dst_zone->wp >=
-			    dst_zone->start + dst_zone->capacity) {
-				// if(atomic64_read(&dst_zone->wp) >= dst_zone->start + dst_zone->capacity) {
-				dst_zone->cond = BLK_ZONE_COND_FULL;
-				biza_gc_untag_isolation_domain(
-					bt, dst_drive_idx, dst_zone_idx);
-				mutex_unlock(&dst_zone->gc_lock);
-				biza_finish_zone(bt, dst_dev, dst_zone_idx);
-				dst_dev->open_zones[dst_oz_idx] =
-					biza_open_empty_zone(bt, dst_dev, false,
-							     BIZA_GC);
-				if (dst_dev->open_zones[dst_oz_idx] ==
-				    dst_dev->nr_zones)
-					BUG_ON(1);
-				dst_zone_idx = dst_dev->open_zones[dst_oz_idx];
-				dst_zone = &dst_dev->zones[dst_zone_idx];
-				mutex_lock(&dst_zone->gc_lock);
-				biza_gc_tag_isolation_domain(bt, dst_drive_idx,
-							     dst_zone_idx,
-							     BIZA_GC_DST);
-				dst_zone->wp += bt->params->chunk_size_sector;
-			}
 		}
 	}
 
