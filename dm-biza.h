@@ -377,6 +377,7 @@ struct biza_gc {
 	struct delayed_work work;
 	struct delayed_work stats_work;
 	struct workqueue_struct *wq;
+	struct workqueue_struct *stats_wq;
 
 	int kc_err;
 

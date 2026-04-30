@@ -509,8 +509,16 @@ int biza_ctr_gc(struct biza_target *bt)
 		ret = -ENOMEM;
 		goto err_kc;
 	}
-	schedule_delayed_work(&gc->stats_work, msecs_to_jiffies(1000));
+	gc->stats_wq = alloc_ordered_workqueue("biza_gcstatswq",
+					       WQ_UNBOUND | WQ_MEM_RECLAIM);
+	if (!gc->stats_wq) {
+		pr_err("dm-biza: Cannot alloc gc stats workqueue\n");
+		ret = -ENOMEM;
+		goto err_kc;
+	}
 	queue_delayed_work(gc->wq, &gc->work, BIZA_GC_DETECT_PERIOD);
+	queue_delayed_work(gc->stats_wq, &gc->stats_work,
+			   msecs_to_jiffies(1000));
 
 	bt->gc = gc;
 	bt->gc->atime = jiffies;
@@ -531,7 +539,9 @@ void biza_dtr_gc(struct biza_target *bt)
 {
 	mutex_destroy(&bt->gc_schedule_lock);
 	cancel_delayed_work_sync(&bt->gc->work);
+	cancel_delayed_work_sync(&bt->gc->stats_work);
 	destroy_workqueue(bt->gc->wq);
+	destroy_workqueue(bt->gc->stats_wq);
 	dm_kcopyd_client_destroy(bt->gc->kc);
 	kfree(bt->gc);
 }
