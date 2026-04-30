@@ -141,6 +141,7 @@ struct biza_zone {
 	sector_t start; /* Zone start sector */
 	sector_t wp; /* Zone write pointer position, in sector */
 	sector_t capacity; /* Zone capacity in number of sectors */
+	sector_t capacity_in_chunks; // capacity in number of chunks
 	sector_t len; /* Zone length (size) in number of sectors */
 	uint8_t cond; /* Zone condition */
 
@@ -644,8 +645,6 @@ static inline bool biza_should_gc(struct biza_target *bt)
 	BUG_ON(bt->gc->nr_free_zones >
 	       bt->params->nr_zones_per_drive * bt->params->nr_drives);
 	BUG_ON(bt->gc->p_free_zones > 100);
-
-	// pr_err("total free zones: %u, free zones percent: %u%%, limit high: %u%%", bt->gc->nr_free_zones, bt->gc->p_free_zones, bt->gc_limit_high);
 
 	return bt->gc->p_free_zones < bt->gc_limit_high;
 }

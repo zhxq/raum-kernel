@@ -33,6 +33,19 @@ static bool biza_select_victim(struct biza_target *bt, uint8_t *drive_idx,
 		}
 	}
 
+	pr_err("Selected victim: invalid_chunk %d, capacity: %llu, threshold: %llu\n",
+	       max_invalid_chunk,
+	       (dev->zones[0].capacity >> bt->params->chunk_size_sector_shift),
+	       (dev->zones[0].capacity >> bt->params->chunk_size_sector_shift) /
+		       8);
+
+	if (max_invalid_chunk <
+	    (dev->zones[0].capacity >> bt->params->chunk_size_sector_shift) /
+		    8) {
+		pr_err("Skipping GC due to inefficient invalid chunks!\n");
+		return false;
+	}
+
 	if (max_invalid_chunk == 0)
 		return false;
 
@@ -288,6 +301,16 @@ static void biza_gc_work(struct work_struct *work)
 		       atomic64_read(&bt->parity_in_place_update),
 		       atomic64_read(&bt->data_flush),
 		       atomic64_read(&bt->parity_flush));
+		// pr_err("Zone capacity: %llu, threshold: %llu\n",
+		//        (bt->devs->zones[0].capacity >>
+		// 	bt->params->chunk_size_sector_shift),
+		//        (bt->devs->zones[0].capacity >>
+		// 	bt->params->chunk_size_sector_shift) /
+		// 	       8);
+		pr_err("Total free zones: %u/%u, free zones percent: %u%%, limit high: %u%%\n",
+		       bt->gc->nr_free_zones,
+		       bt->params->nr_zones_per_drive * bt->params->nr_drives,
+		       bt->gc->p_free_zones, bt->gc_limit_high);
 		atomic64_set(&bt->previous_print_time, ktime_get_boottime_ns());
 	}
 

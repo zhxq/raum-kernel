@@ -582,7 +582,7 @@ static int biza_init_devs(struct dm_target *ti)
 {
 	struct biza_target *bt = ti->private;
 	struct biza_dev *dev = NULL;
-	int i = 0;
+	int i = 0, j = 0;
 	int ret = 0;
 
 	for (i = 0; i < bt->params->nr_drives; ++i) {
