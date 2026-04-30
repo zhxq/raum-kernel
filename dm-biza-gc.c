@@ -129,7 +129,8 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 	uint32_t dst_zone_idx;
 	uint8_t dst_oz_idx;
 	uint64_t src_offset, dst_offset;
-	uint64_t src_pcn, dst_pcn;
+	uint64_t src_pcn, dst_pcn, valid_counter = 0;
+	uint64_t original_invalid_pages = 0;
 	struct dm_io_region src, dst;
 	ulong flags = 0, barrier = 0;
 	struct biza_gc gc_ctx;
@@ -148,8 +149,9 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 
 	mutex_lock(&dst_zone->gc_lock);
 
-	pr_err("GC source dev: %u, zone: %u; dest dev: %u, zone: %u\n",
-	       src_drive_idx, src_zone_idx, dst_drive_idx, dst_zone_idx);
+	pr_err("GC start, source dev: %u, zone: %u; dest dev: %u, zone: %u; reported invalid pages: %llu\n",
+	       src_drive_idx, src_zone_idx, dst_drive_idx, dst_zone_idx,
+	       src_zone->nr_invalid_chunks);
 
 	BUG_ON(src_zone->cond != BLK_ZONE_COND_FULL);
 	BUG_ON(dst_zone->cond == BLK_ZONE_COND_FULL);
@@ -166,6 +168,7 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 		src_pcn = biza_idx_to_pcn(bt, src_drive_idx, src_zone_idx,
 					  src_offset);
 		if (biza_map_is_data_in_pcn_useful(bt, src_pcn)) {
+			valid_counter++;
 			src.bdev = src_dev->dev->bdev;
 			src.sector = biza_idx_to_sector(bt, src_drive_idx,
 							src_zone_idx,
@@ -243,6 +246,13 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 
 	biza_gc_untag_isolation_domain(bt, dst_drive_idx, dst_zone_idx);
 	biza_gc_untag_isolation_domain(bt, src_drive_idx, src_zone_idx);
+
+	pr_err("GC finished, source dev: %u, zone: %u; dest dev: %u, zone: %u; reported invalid pages: %llu, actual invalid pages: %llu, actual valid pages: %llu\n",
+	       src_drive_idx, src_zone_idx, dst_drive_idx, dst_zone_idx,
+	       src_zone->nr_invalid_chunks,
+	       (src_zone->capacity >> bt->params->chunk_size_sector_shift) -
+		       valid_counter,
+	       valid_counter);
 }
 
 // Entry of GC
@@ -280,16 +290,12 @@ static inline int biza_target_idle(struct biza_target *bt)
 	return time_is_before_jiffies(bt->gc->atime + BIZA_IDLE_PERIOD);
 }
 
-// GC work function
-static void biza_gc_work(struct work_struct *work)
+void biza_print_gc_stats(struct work_struct *work)
 {
-	struct biza_gc *gc = container_of(work, struct biza_gc, work.work);
+	struct biza_gc *gc =
+		container_of(work, struct biza_gc, stats_work.work);
 	struct biza_target *bt = gc->bt;
-	int ret = 0;
-
-	if (WRITE_AMP_STAT &&
-	    ktime_get_boottime_ns() - atomic64_read(&bt->previous_print_time) >
-		    1000000000) {
+	if (WRITE_AMP_STAT) {
 		pr_err("user_send %lld, user_read %lld, data write %lld, gc write %lld, num chunks %lld, parity write %lld, data in place update %lld, parity in place update %lld, data flush %lld, parity flush %lld\n",
 		       atomic64_read(&bt->user_send),
 		       atomic64_read(&bt->user_read),
@@ -311,8 +317,16 @@ static void biza_gc_work(struct work_struct *work)
 		       bt->gc->nr_free_zones,
 		       bt->params->nr_zones_per_drive * bt->params->nr_drives,
 		       bt->gc->p_free_zones, bt->gc_limit_high);
-		atomic64_set(&bt->previous_print_time, ktime_get_boottime_ns());
+		schedule_delayed_work(&gc->stats_work, msecs_to_jiffies(1000));
 	}
+}
+
+// GC work function
+static void biza_gc_work(struct work_struct *work)
+{
+	struct biza_gc *gc = container_of(work, struct biza_gc, work.work);
+	struct biza_target *bt = gc->bt;
+	int ret = 0;
 
 	if (!biza_should_gc(bt)) {
 		log("No GC!!!!\n");
@@ -487,6 +501,7 @@ int biza_ctr_gc(struct biza_target *bt)
 
 	/* GC work */
 	INIT_DELAYED_WORK(&gc->work, biza_gc_work);
+	INIT_DELAYED_WORK(&gc->stats_work, biza_print_gc_stats);
 	gc->wq = alloc_ordered_workqueue("biza_gcwq",
 					 WQ_UNBOUND | WQ_MEM_RECLAIM);
 	if (!gc->wq) {
@@ -494,6 +509,7 @@ int biza_ctr_gc(struct biza_target *bt)
 		ret = -ENOMEM;
 		goto err_kc;
 	}
+	schedule_delayed_work(&gc->stats_work, msecs_to_jiffies(1000));
 	queue_delayed_work(gc->wq, &gc->work, BIZA_GC_DETECT_PERIOD);
 
 	bt->gc = gc;

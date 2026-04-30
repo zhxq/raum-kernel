@@ -375,6 +375,7 @@ struct biza_gc {
 	struct dm_kcopyd_throttle kc_throttle;
 
 	struct delayed_work work;
+	struct delayed_work stats_work;
 	struct workqueue_struct *wq;
 
 	int kc_err;
