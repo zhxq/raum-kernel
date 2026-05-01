@@ -1983,7 +1983,7 @@ static void stripe_head_endio(biza_stripe_head_t *sh)
 		queue_work(bt->end_iowq, &sh->work);
 	}
 
-	// biza_free_stripe_head_ioctx(shioctx);
+	biza_free_stripe_head_ioctx(shioctx);
 
 	biza_bio_endio(bio, status);
 }
