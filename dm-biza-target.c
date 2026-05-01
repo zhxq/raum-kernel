@@ -154,6 +154,13 @@ void biza_flush_big_chunk(struct biza_target *bt,
 						(uint8_t)BIZA_MAP_INVALID;
 					bt->map->p2l[old_pcn].in_raum = true;
 				}
+				// stripe->in_raum_count--;
+				// if (stripe->in_raum_count == 0) {
+				// 	sh = biza_get_stripe_head_with_no(
+				// 		bt, stripe_no);
+				// 	biza_free_stripe_head_ioctx(sh->ioctx);
+				// 	sh->ioctx = NULL;
+				// }
 				stripe->parity_pcns[chunkioctx->slot] = pcn;
 				local_irq_restore(flags);
 
@@ -184,6 +191,22 @@ void biza_flush_big_chunk(struct biza_target *bt,
 				    BIZA_MAP_INVALID) {
 					pr_err("Hit old_pcn 0x%llx with invalid stripe\n",
 					       old_pcn);
+				} else {
+					// stripe_no =
+					// 	bt->map->p2l[old_pcn].stripe_no;
+					// stripe = xa_load(&bt->map->stripe_table,
+					// 		 stripe_no);
+					// if (stripe) {
+					// 	stripe->in_raum_count--;
+					// 	// if (stripe->in_raum_count ==
+					// 	//     0) {
+					// 	// 	sh = biza_get_stripe_head_with_no(
+					// 	// 		bt, stripe_no);
+					// 	// 	biza_free_stripe_head_ioctx(
+					// 	// 		sh->ioctx);
+					// 	// 	sh->ioctx = NULL;
+					// 	// }
+					// }
 				}
 				bt->map->l2p[old_lcn].stripe_no =
 					bt->map->p2l[old_pcn].stripe_no;
@@ -1391,11 +1414,7 @@ biza_stripe_head_t *biza_get_stripe_head_with_no(struct biza_target *bt,
 
 	// Try to get from fshc
 	if (!sh) {
-		sh = xa_load(&bt->fshc, no);
-		if (sh) {
-			log("load shno 0x%llx from fshc\n", no);
-			xa_erase_irq(&bt->fshc, no);
-		}
+		sh = xa_erase_irq(&bt->fshc, no);
 	}
 
 	return sh;
@@ -1952,7 +1971,6 @@ static void stripe_head_endio(biza_stripe_head_t *sh)
 
 	if (sh->nr_data_written == bt->params->k) {
 		/** Add to another list. Release until ZRWA window has slided left. **/
-		sh->ioctx = NULL;
 		log("store shno 0x%llx to fshc\n", sh->no);
 		if (!sh->larger_chunk) {
 			xa_store_irq(&bt->fshc, sh->no, sh, GFP_ATOMIC);
@@ -1965,13 +1983,12 @@ static void stripe_head_endio(biza_stripe_head_t *sh)
 		queue_work(bt->end_iowq, &sh->work);
 	}
 
-	biza_free_stripe_head_ioctx(shioctx);
+	// biza_free_stripe_head_ioctx(shioctx);
 
 	biza_bio_endio(bio, status);
 }
 
-static inline void biza_end_stripe_head_io(biza_stripe_head_t *sh,
-					   blk_status_t status)
+static void biza_end_stripe_head_io(biza_stripe_head_t *sh, blk_status_t status)
 {
 	struct biza_stripe_head_ioctx *shioctx = sh->ioctx;
 
@@ -2876,6 +2893,11 @@ static int biza_handle_data_in_place_update(struct biza_target *bt,
 
 	if (!sh->ioctx)
 		BUG_ON(1);
+	if (refcount_read(&sh->ioctx->ref) != 1) {
+		pr_err("In place update shioctx->ref=%u\n",
+		       refcount_read(&sh->ioctx->ref));
+	}
+
 	sh->ioctx->bio = bio;
 	sh->ioctx->data_wrt_cnt = 1;
 	sh->ioctx->lcn_start = lcn;
@@ -3156,6 +3178,10 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 					&big_chunk->flush_in_flight)) {
 					cpu_relax();
 				}
+				// Now data in flash, not RAUM
+				data_in_raum = false;
+				pcn = biza_map_lcn_lookup_pcn(bt, lcn);
+				goto read;
 			}
 			goto read;
 		}

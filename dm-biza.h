@@ -339,6 +339,7 @@ struct biza_stripe {
 	uint8_t valid;
 	bool larger_chunk;
 	uint64_t chunks_in_shard;
+	uint8_t in_raum_count;
 };
 
 // biza addr for mapping tables
@@ -557,6 +558,7 @@ struct biza_io_work {
 };
 
 /** Functions defined in dm-biza-target.c **/
+inline void biza_free_stripe_head_ioctx(struct biza_stripe_head_ioctx *shioctx);
 int biza_reset_zone(struct biza_target *bt, struct biza_dev *dev,
 		    uint32_t zone_idx, bool all);
 uint32_t biza_open_empty_zone(struct biza_target *bt, struct biza_dev *dev,

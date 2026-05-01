@@ -53,6 +53,7 @@ static struct biza_stripe *biza_alloc_stripe(struct biza_target *bt,
 	stripe->valid = 0;
 	stripe->larger_chunk = larger_chunk;
 	stripe->chunks_in_shard = chunks_in_shard;
+	stripe->in_raum_count = 0;
 
 	return stripe;
 
@@ -370,6 +371,9 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 	}
 	stripe->larger_chunk = larger_chunk;
 	stripe->chunks_in_shard = chunks_in_shard;
+	if (in_raum) {
+		stripe->in_raum_count++;
+	}
 
 	for (i = 0; i < max_i; i++) {
 		org_pcn = bt->map->l2p[lcn + i].chunk_no;
@@ -553,7 +557,9 @@ void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
 			}
 		}
 	}
-
+	if (in_raum) {
+		stripe->in_raum_count++;
+	}
 	stripe->parity_pcns[slot] = pcn;
 	for (i = 0; i < chunks_in_shard; i++) {
 		// stripe->parity_pcns[slot] == BIZA_MAP_UNMAPPED

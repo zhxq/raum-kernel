@@ -317,7 +317,8 @@ void biza_print_gc_stats(struct work_struct *work)
 		       bt->gc->nr_free_zones,
 		       bt->params->nr_zones_per_drive * bt->params->nr_drives,
 		       bt->gc->p_free_zones, bt->gc_limit_high);
-		schedule_delayed_work(&gc->stats_work, msecs_to_jiffies(1000));
+		queue_delayed_work(gc->stats_wq, &gc->stats_work,
+				   msecs_to_jiffies(2500));
 	}
 }
 
@@ -518,7 +519,7 @@ int biza_ctr_gc(struct biza_target *bt)
 	}
 	queue_delayed_work(gc->wq, &gc->work, BIZA_GC_DETECT_PERIOD);
 	queue_delayed_work(gc->stats_wq, &gc->stats_work,
-			   msecs_to_jiffies(1000));
+			   msecs_to_jiffies(2500));
 
 	bt->gc = gc;
 	bt->gc->atime = jiffies;
