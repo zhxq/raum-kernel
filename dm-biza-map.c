@@ -359,6 +359,7 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 	biza_free_raum_chunk_t *free_chunk;
 	struct biza_raum_location_entry *org_raum_stripe_data;
 	struct biza_raum_dev *dev;
+	biza_stripe_head_t *old_sh;
 	// unsigned long flags;
 	int i = 0, j = 0, k = 0, max_i = chunks_in_shard;
 	int original_stripe_max_i = 1;
@@ -483,6 +484,7 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 								       larger_chunk,
 								       chunks_in_shard);
 								;
+								continue;
 							}
 							bt->map->p2l[org_parity_pcn +
 								     k]
@@ -519,6 +521,13 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 					xa_erase_irq(&bt->map->stripe_table,
 						     org_stripe_no);
 					biza_free_stripe(bt, org_stripe);
+
+					old_sh = xa_erase_irq(&bt->fshc,
+							      org_stripe_no);
+					if (old_sh) {
+						biza_free_stripe_head(bt,
+								      old_sh);
+					}
 				}
 			}
 		}

@@ -1538,32 +1538,46 @@ static inline bool biza_allocate_wp(struct biza_target *bt, uint8_t drive_idx,
 	lcn = biza_map_pcn_lookup_lcn(bt, pcn);
 	// pr_err("drive_idx %u, zone_idx %u, zone_wp add, now: %llu\n", drive_idx, zone_idx, zone->wp);
 	// atomic64_add(bt->params->chunk_size_sector, &zone->wp);
-
 	if (zone->wp + size >=
 	    zone->start + zone->capacity) { // 这个zone使用完了
-		zone->cond = BLK_ZONE_COND_FULL;
-		// pr_err("drive_idx %u, zone_idx %u full\n", drive_idx, dev->open_zones[oz_idx]);
-		spin_unlock_irqrestore(&zone->zlock, *flags);
+		if (zone->cond != BLK_ZONE_COND_FULL) {
+			// Edge case, two write threads calling the same zone_idx
+			// [ 1144.184678] dm-biza: finishing dev: nvme0n1, zone 90, start: 0x2d00000
+			// [ 1144.184729] finish zone 90
+			// [ 1144.189898] dm-biza: GC: No, opening dev: nvme0n1, zone 35, start: 0x1180000
+			// [ 1144.190808] drive_idx 0, oz_idx 8 open new zone 35/128
+			// [ 1144.195415] dm-biza: finishing dev: nvme0n1, zone 90, start: 0x2d00000
+			// [ 1144.195445] finish zone 90
+			// [FEMU] Err: Error IO processed! opcode=0x79, status=0x41bd
+			// [FEMU] Err: cdw10=0x2f00000, cdw11=0x0, cdw12=0x0, cdw13=0x3, cdw14=0x0, cdw15=0x0
+			zone->cond = BLK_ZONE_COND_FULL;
+			// pr_err("drive_idx %u, zone_idx %u full\n", drive_idx, dev->open_zones[oz_idx]);
+			spin_unlock_irqrestore(&zone->zlock, *flags);
 
-		up_read(&dev->ozlock);
-		down_write(&dev->ozlock);
-		while (atomic64_read(&zone->in_flight_ios) !=
-		       atomic64_read(&zone->finished_ios)) {
-			pr_err("Waiting for in flight io (%llu/%llu finished)\n",
-			       atomic64_read(&zone->finished_ios),
-			       atomic64_read(&zone->in_flight_ios));
-			cpu_relax();
-			cond_resched();
+			up_read(&dev->ozlock);
+			down_write(&dev->ozlock);
+			while (atomic64_read(&zone->in_flight_ios) !=
+			       atomic64_read(&zone->finished_ios)) {
+				pr_err("Waiting for in flight io (%llu/%llu finished)\n",
+				       atomic64_read(&zone->finished_ios),
+				       atomic64_read(&zone->in_flight_ios));
+				cpu_relax();
+				cond_resched();
+			}
+			ret = biza_finish_zone(bt, dev, zone_idx);
+			pr_err("finish zone %u\n", zone_idx);
+			dev->open_zones[oz_idx] = biza_open_empty_zone(
+				bt, dev, true,
+				biza_oz_idx_to_aware_type(bt, drive_idx,
+							  oz_idx));
+			pr_err("drive_idx %u, oz_idx %u open new zone %u/%u\n",
+			       drive_idx, oz_idx, dev->open_zones[oz_idx],
+			       dev->nr_zones);
+		} else {
+			spin_unlock_irqrestore(&zone->zlock, *flags);
+			up_read(&dev->ozlock);
+			down_write(&dev->ozlock);
 		}
-		ret = biza_finish_zone(bt, dev, zone_idx);
-		pr_err("finish zone %u\n", zone_idx);
-		dev->open_zones[oz_idx] = biza_open_empty_zone(
-			bt, dev, true,
-			biza_oz_idx_to_aware_type(bt, drive_idx, oz_idx));
-		pr_err("drive_idx %u, oz_idx %u open new zone %u/%u\n",
-		       drive_idx, oz_idx, dev->open_zones[oz_idx],
-		       dev->nr_zones);
-
 		if (dev->open_zones[oz_idx] == dev->nr_zones)
 			BUG_ON(1);
 		downgrade_write(&dev->ozlock);
