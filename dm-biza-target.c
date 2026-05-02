@@ -1536,11 +1536,11 @@ static inline bool biza_allocate_wp(struct biza_target *bt, uint8_t drive_idx,
 	// not in using & used
 	pcn = biza_idx_to_pcn(bt, drive_idx, zone_idx, wp_off);
 	lcn = biza_map_pcn_lookup_lcn(bt, pcn);
-	zone->wp += size;
 	// pr_err("drive_idx %u, zone_idx %u, zone_wp add, now: %llu\n", drive_idx, zone_idx, zone->wp);
 	// atomic64_add(bt->params->chunk_size_sector, &zone->wp);
 
-	if (zone->wp >= zone->start + zone->capacity) { // 这个zone使用完了
+	if (zone->wp + size >=
+	    zone->start + zone->capacity) { // 这个zone使用完了
 		zone->cond = BLK_ZONE_COND_FULL;
 		// pr_err("drive_idx %u, zone_idx %u full\n", drive_idx, dev->open_zones[oz_idx]);
 		spin_unlock_irqrestore(&zone->zlock, *flags);
@@ -1570,9 +1570,10 @@ static inline bool biza_allocate_wp(struct biza_target *bt, uint8_t drive_idx,
 
 		zone_idx = dev->open_zones[oz_idx];
 		zone = &dev->zones[zone_idx];
-		zone->wp += size;
 		spin_lock_irqsave(&zone->zlock, *flags);
 	}
+
+	zone->wp += size;
 
 	return true;
 }
@@ -2010,7 +2011,7 @@ void biza_chunkio_endio(struct bio *chunkio)
 	uint32_t zone_idx;
 	uint64_t offset;
 	sector_t bi_sector;
-	sector_t old_pcn;
+	sector_t pcn;
 	sector_t lcn;
 	struct biza_target *bt;
 	biza_raum_big_chunk_t *big_chunk;
@@ -2043,9 +2044,9 @@ void biza_chunkio_endio(struct bio *chunkio)
 		    chunkioctx->drive_idx, chunkio->bi_iter.bi_sector,
 		    sh->larger_chunk);
 
-		old_pcn = chunkioctx->pcn;
+		pcn = chunkioctx->pcn;
 
-		if (!chunkioctx->in_raum) {
+		if (!biza_check_pcn_in_raum(bt, pcn)) {
 			bi_sector = chunkio->bi_iter.bi_sector;
 			chunkioctx->pcn = biza_sector_to_pcn(
 				chunkioctx->bt, chunkioctx->drive_idx,
@@ -2092,7 +2093,7 @@ void biza_chunkio_endio(struct bio *chunkio)
 		// 	BUG_ON(1);
 		// }
 
-		if (!chunkioctx->in_raum) {
+		if (!biza_check_pcn_in_raum(bt, pcn)) {
 			biza_gc_avoid_stat(chunkioctx);
 		}
 
@@ -2165,7 +2166,7 @@ void biza_bigchunkio_endio(struct bio *chunkio)
 	uint32_t zone_idx;
 	uint64_t offset;
 	sector_t bi_sector;
-	sector_t lcn;
+	sector_t lcn, pcn;
 	int ret;
 
 	// log("bigchunkio end drive_idx %u sector 0x%llx pcn 0x%llx num chunks %u size 0x%llx\n",
@@ -2193,6 +2194,7 @@ void biza_bigchunkio_endio(struct bio *chunkio)
 		    chunkioctx->type == BIZA_DATA_UPDATE ||
 		    chunkioctx->type == BIZA_PARITY_UPDATE) {
 			sh = chunkioctx->sh;
+			pcn = chunkioctx->pcn;
 
 			if (unlikely(status != BLK_STS_OK)) {
 				// pr_err("dm-biza: io failed! io_type %d, bi_status %d, offset %lld, sectors %u",
@@ -2206,7 +2208,7 @@ void biza_bigchunkio_endio(struct bio *chunkio)
 				BUG_ON(1);
 			}
 
-			if (!chunkioctx->in_raum) {
+			if (!biza_check_pcn_in_raum(bt, pcn)) {
 				bi_sector = chunkio->bi_iter.bi_sector;
 				chunkioctx->pcn = biza_sector_to_pcn(
 					chunkioctx->bt, chunkioctx->drive_idx,
@@ -2232,7 +2234,7 @@ void biza_bigchunkio_endio(struct bio *chunkio)
 			}
 
 			// TODO: set in_raum to false when flushing
-			if (!chunkioctx->in_raum) {
+			if (!biza_check_pcn_in_raum(bt, pcn)) {
 				biza_gc_avoid_stat(chunkioctx);
 			}
 

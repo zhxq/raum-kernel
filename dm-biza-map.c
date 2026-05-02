@@ -111,8 +111,8 @@ inline sector_t biza_idx_to_sector(struct biza_target *bt, uint8_t drive_idx,
 	       (offset << bt->params->chunk_size_sector_shift);
 }
 
-inline sector_t biza_sector_to_pcn(struct biza_target *bt, uint8_t drive_idx,
-				   sector_t sector)
+sector_t biza_sector_to_pcn(struct biza_target *bt, uint8_t drive_idx,
+			    sector_t sector)
 {
 	u64 zone_len = bt->devs[drive_idx].zones[0].len;
 	u64 rem;
@@ -158,8 +158,8 @@ inline sector_t biza_raum_idx_to_pcn(struct biza_target *bt, uint8_t drive_idx,
 /**
  * idx to pcn
  */
-inline sector_t biza_idx_to_pcn(struct biza_target *bt, uint8_t drive_idx,
-				uint32_t zone_idx, uint64_t offset)
+sector_t biza_idx_to_pcn(struct biza_target *bt, uint8_t drive_idx,
+			 uint32_t zone_idx, uint64_t offset)
 {
 	sector_t pcn = (drive_idx * bt->params->nr_zones_per_drive + zone_idx) *
 			       bt->params->zone_capacity_chunk +
@@ -170,6 +170,9 @@ inline sector_t biza_idx_to_pcn(struct biza_target *bt, uint8_t drive_idx,
 	}
 	BUG_ON(zone_idx >= bt->params->nr_zones_per_drive);
 	if (offset >= bt->params->zone_capacity_chunk) {
+		pr_err("biza_idx_to_pcn OOB drive %u zone %u offset 0x%llx\n",
+		       drive_idx, zone_idx, offset);
+		dump_stack();
 		BUG_ON(1);
 	}
 
@@ -371,9 +374,9 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 	}
 	stripe->larger_chunk = larger_chunk;
 	stripe->chunks_in_shard = chunks_in_shard;
-	if (in_raum) {
-		stripe->in_raum_count++;
-	}
+	// if (in_raum) {
+	// 	stripe->in_raum_count++;
+	// }
 
 	for (i = 0; i < max_i; i++) {
 		org_pcn = bt->map->l2p[lcn + i].chunk_no;
@@ -400,7 +403,7 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 			// DO NOT set stripe_no now, because when gc, we need recompute parity
 			// bt->map->p2l[org_pcn].stripe_no = BIZA_MAP_INVALID;
 			bt->map->p2l[org_pcn].slot = (uint8_t)BIZA_MAP_INVALID;
-			if (!bt->map->p2l[org_pcn].in_raum) {
+			if (!biza_check_pcn_in_raum(bt, org_pcn)) {
 				// pr_err("Testing in_raum 1 0x%llx\n", org_pcn);
 				// pr_err("Inif Data update lcn: 0x%llx, pcn: 0x%llx, original_pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
 				//        lcn, org_pcn, pcn, no, slot, in_raum);
@@ -493,9 +496,10 @@ void biza_map_update_data_wrt(struct biza_target *bt, sector_t lcn,
 								     k]
 								.slot = (uint8_t)
 								BIZA_MAP_INVALID;
-							if (!bt->map->p2l[org_parity_pcn +
-									  k]
-								     .in_raum) {
+							if (!biza_check_pcn_in_raum(
+								    bt,
+								    org_parity_pcn +
+									    k)) {
 								// pr_err("Inloop Data update lcn: 0x%llx, pcn: 0x%llx, original_pcn: 0x%llx, stripe_no: 0x%llx, slot: %u, in_raum: %d\n",
 								//        lcn, org_pcn, pcn, no,
 								//        slot, in_raum);
@@ -557,9 +561,9 @@ void biza_map_update_parity_wrt(struct biza_target *bt, sector_t pcn,
 			}
 		}
 	}
-	if (in_raum) {
-		stripe->in_raum_count++;
-	}
+	// if (in_raum) {
+	// 	stripe->in_raum_count++;
+	// }
 	stripe->parity_pcns[slot] = pcn;
 	for (i = 0; i < chunks_in_shard; i++) {
 		// stripe->parity_pcns[slot] == BIZA_MAP_UNMAPPED
