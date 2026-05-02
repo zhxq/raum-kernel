@@ -156,6 +156,9 @@ struct biza_zone {
 	int8_t iso_dm_vote;
 	uint8_t high_lat_score;
 
+	atomic64_t doing_gc;
+	atomic64_t doing_read;
+
 	atomic64_t in_flight_ios;
 	atomic64_t finished_ios;
 

@@ -499,6 +499,9 @@ static int biza_init_zone(struct blk_zone *blkz, unsigned int idx, void *data)
 	atomic64_set(&zone->in_flight_ios, 0);
 	atomic64_set(&zone->finished_ios, 0);
 
+	atomic64_set(&zone->doing_gc, 0);
+	atomic64_set(&zone->doing_read, 0);
+
 	dev->capacity += zone->capacity;
 	dev->len += zone->len;
 
@@ -3159,9 +3162,13 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 {
 	sector_t cur_sec, nxt_sec, size, left;
 	sector_t lcn, pcn, temp_lcn, temp_pcn, start_lcn, end_lcn;
+	uint8_t drive_idx;
+	uint32_t zone_idx;
+	sector_t offset;
 	biza_raum_big_chunk_t *big_chunk;
+	struct biza_zone *zone;
 	sector_t raum_lcns[RAUM_BIG_CHUNK_PAGES];
-	bool data_in_raum = false;
+	bool data_in_raum = false, read_inc = false;
 	int raum_lcns_len = 0;
 	int ret;
 	int i;
@@ -3174,6 +3181,7 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 
 	while (left > 0) {
 		data_in_raum = false;
+		read_inc = false;
 		cur_sec = bio->bi_iter.bi_sector;
 		// e.g., chunk = 128 sec, 0->128, 32->128
 		nxt_sec = min(round_up(cur_sec + 1,
@@ -3193,6 +3201,7 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 				while (atomic64_read(
 					&big_chunk->flush_in_flight)) {
 					cpu_relax();
+					cond_resched();
 				}
 				// Now data in flash, not RAUM
 				data_in_raum = false;
@@ -3200,6 +3209,24 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 				goto read;
 			}
 			goto read;
+		} else {
+			if (!(pcn == BIZA_MAP_UNMAPPED ||
+			      pcn == BIZA_MAP_INVALID)) {
+				biza_pcn_to_idx(bt, pcn, &drive_idx, &zone_idx,
+						&offset);
+				zone = &bt->devs[drive_idx].zones[zone_idx];
+				atomic64_inc(&zone->doing_read);
+				if (atomic64_read(&zone->doing_gc)) {
+					atomic64_dec(&zone->doing_read);
+					while (atomic64_read(&zone->doing_gc)) {
+						cpu_relax();
+						cond_resched();
+					}
+					atomic64_inc(&zone->doing_read);
+					pcn = biza_map_lcn_lookup_pcn(bt, lcn);
+				}
+				read_inc = true;
+			}
 		}
 
 		for (i = 1;; i++) {
@@ -3239,6 +3266,10 @@ read:
 		if (data_in_raum) {
 			big_chunk = biza_find_big_chunk_by_pcn(bt, pcn);
 			atomic64_dec(&big_chunk->updates_in_flight);
+		} else {
+			if (read_inc) {
+				atomic64_dec(&zone->doing_read);
+			}
 		}
 
 		left = bio_sectors(bio);

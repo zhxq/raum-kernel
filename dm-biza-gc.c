@@ -143,6 +143,15 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 	xa_init(&parity_pcns);
 	src_dev = &bt->devs[src_drive_idx];
 	src_zone = &src_dev->zones[src_zone_idx];
+	atomic64_inc(&src_zone->doing_gc);
+	if (atomic64_read(&src_zone->doing_read)) {
+		atomic64_dec(&src_zone->doing_gc);
+		while (atomic64_read(&src_zone->doing_read)) {
+			cpu_relax();
+			cond_resched();
+		}
+		atomic64_inc(&src_zone->doing_gc);
+	}
 	biza_gc_choose_dst_zone(bt, &dst_drive_idx, &dst_zone_idx, &dst_oz_idx);
 	dst_dev = &bt->devs[dst_drive_idx];
 	dst_zone = &dst_dev->zones[dst_zone_idx];
@@ -241,6 +250,8 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 	}
 
 	mutex_unlock(&dst_zone->gc_lock);
+
+	atomic64_dec(&src_zone->doing_gc);
 
 	xa_destroy(&parity_pcns);
 
