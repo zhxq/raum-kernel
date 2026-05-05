@@ -143,15 +143,6 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 	xa_init(&parity_pcns);
 	src_dev = &bt->devs[src_drive_idx];
 	src_zone = &src_dev->zones[src_zone_idx];
-	atomic64_inc(&src_zone->doing_gc);
-	if (atomic64_read(&src_zone->doing_read)) {
-		atomic64_dec(&src_zone->doing_gc);
-		while (atomic64_read(&src_zone->doing_read)) {
-			cpu_relax();
-			cond_resched();
-		}
-		atomic64_inc(&src_zone->doing_gc);
-	}
 	biza_gc_choose_dst_zone(bt, &dst_drive_idx, &dst_zone_idx, &dst_oz_idx);
 	dst_dev = &bt->devs[dst_drive_idx];
 	dst_zone = &dst_dev->zones[dst_zone_idx];
@@ -251,8 +242,6 @@ static void biza_gc_move_valid_data(struct biza_target *bt,
 
 	mutex_unlock(&dst_zone->gc_lock);
 
-	atomic64_dec(&src_zone->doing_gc);
-
 	xa_destroy(&parity_pcns);
 
 	biza_gc_untag_isolation_domain(bt, dst_drive_idx, dst_zone_idx);
@@ -272,13 +261,28 @@ int biza_do_gc(struct biza_target *bt)
 	uint8_t victim_drive_idx;
 	uint32_t victim_zone_idx;
 	int ret = 0;
+	struct biza_zone *src_zone = NULL;
 	log("Doing GC... out\n");
 	ret = biza_select_victim(bt, &victim_drive_idx, &victim_zone_idx);
 	if (ret) {
 		log("Doing GC... in\n");
+		src_zone = &bt->devs[victim_drive_idx].zones[victim_zone_idx];
+		atomic64_inc(&src_zone->doing_gc);
+		if (atomic64_read(&src_zone->doing_read)) {
+			atomic64_dec(&src_zone->doing_gc);
+			while (atomic64_read(&src_zone->doing_read)) {
+				cpu_relax();
+				cond_resched();
+			}
+			atomic64_inc(&src_zone->doing_gc);
+		}
+
 		biza_gc_move_valid_data(bt, victim_drive_idx, victim_zone_idx);
 		biza_reset_zone(bt, &bt->devs[victim_drive_idx],
 				victim_zone_idx, false);
+
+		atomic64_dec(&src_zone->doing_gc);
+
 		log("Finished GC... in\n");
 	}
 

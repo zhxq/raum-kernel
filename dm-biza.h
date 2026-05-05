@@ -547,6 +547,7 @@ struct biza_chunkioctx {
 	uint8_t drive_idx;
 	bool in_raum;
 	bool raum_flush_to_zone;
+	bool read_inc;
 
 	unsigned long stime; // I/O start time (in jiffies)
 };

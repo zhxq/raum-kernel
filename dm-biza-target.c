@@ -2032,6 +2032,7 @@ void biza_chunkio_endio(struct bio *chunkio)
 	sector_t lcn;
 	struct biza_target *bt;
 	biza_raum_big_chunk_t *big_chunk;
+	struct biza_zone *zone = NULL;
 	int ret;
 	int i;
 
@@ -2141,6 +2142,13 @@ void biza_chunkio_endio(struct bio *chunkio)
 
 	} else if (chunkioctx->type == BIZA_DATA_READ) {
 		bio = chunkioctx->bio;
+
+		if (chunkioctx->read_inc) {
+			biza_pcn_to_idx(chunkioctx->bt, chunkioctx->pcn,
+					&drive_idx, &zone_idx, &offset);
+			zone = &chunkioctx->bt->devs[drive_idx].zones[zone_idx];
+			atomic64_dec(&zone->doing_read);
+		}
 
 		kfree(chunkioctx);
 		bio_put(chunkio);
@@ -3095,7 +3103,8 @@ static int biza_handle_write(struct biza_target *bt, struct bio *bio)
 
 // Send chunk I/O to SSD
 static int biza_submit_chunk_read(struct biza_target *bt, struct bio *bio,
-				  sector_t lcn, sector_t pcn, sector_t size)
+				  sector_t lcn, sector_t pcn, sector_t size,
+				  bool read_inc)
 {
 	struct biza_bioctx *bioctx =
 		dm_per_bio_data(bio, sizeof(struct biza_bioctx));
@@ -3145,6 +3154,7 @@ static int biza_submit_chunk_read(struct biza_target *bt, struct bio *bio,
 		chunkioctx->bt = bt;
 		chunkioctx->pcn = pcn;
 		chunkioctx->drive_idx = drive_idx;
+		chunkioctx->read_inc = read_inc;
 
 		chunkio->bi_private = chunkioctx;
 
@@ -3222,8 +3232,12 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 						cpu_relax();
 						cond_resched();
 					}
-					atomic64_inc(&zone->doing_read);
 					pcn = biza_map_lcn_lookup_pcn(bt, lcn);
+					biza_pcn_to_idx(bt, pcn, &drive_idx,
+							&zone_idx, &offset);
+					zone = &bt->devs[drive_idx]
+							.zones[zone_idx];
+					atomic64_inc(&zone->doing_read);
 				}
 				read_inc = true;
 			}
@@ -3257,7 +3271,7 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 		}
 
 read:
-		ret = biza_submit_chunk_read(bt, bio, lcn, pcn, size);
+		ret = biza_submit_chunk_read(bt, bio, lcn, pcn, size, read_inc);
 		if (ret) {
 			pr_err("dm-biza: io error: cannot submit chunk read");
 			return -EIO;
@@ -3266,10 +3280,6 @@ read:
 		if (data_in_raum) {
 			big_chunk = biza_find_big_chunk_by_pcn(bt, pcn);
 			atomic64_dec(&big_chunk->updates_in_flight);
-		} else {
-			if (read_inc) {
-				atomic64_dec(&zone->doing_read);
-			}
 		}
 
 		left = bio_sectors(bio);
