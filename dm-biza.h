@@ -129,6 +129,8 @@ struct biza_zone
 	uint8_t high_lat_score;
 
 	spinlock_t zlock;
+	struct rw_semaphore read_lock;
+	seqlock_t read_seq_lock;
 };
 
 typedef enum biza_iso_dm_state

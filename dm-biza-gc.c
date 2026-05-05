@@ -191,8 +191,12 @@ int biza_do_gc(struct biza_target *bt)
 	if (ret)
 	{
 		// pr_err("Doing GC... in\n");
+		down_write(&bt->devs[victim_drive_idx].zones[victim_zone_idx].read_lock);
+
 		biza_gc_move_valid_data(bt, victim_drive_idx, victim_zone_idx);
 		biza_reset_zone(bt, &bt->devs[victim_drive_idx], victim_zone_idx, false);
+
+		up_write(&bt->devs[victim_drive_idx].zones[victim_zone_idx].read_lock);
 		// pr_err("Finished GC... in\n");
 	}
 

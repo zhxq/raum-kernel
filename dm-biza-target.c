@@ -144,6 +144,9 @@ static int biza_init_zone(struct blk_zone *blkz, unsigned int idx, void *data)
 	zone->len = blkz->len;
 	zone->nr_invalid_chunks = 0;
 
+	init_rwsem(&zone->read_lock);
+	seqlock_init(&zone->read_seq_lock);
+
 	dev->capacity += zone->capacity;
 	dev->len += zone->len;
 
@@ -667,7 +670,7 @@ static void biza_dtr(struct dm_target *ti)
 		stripe = xa_load(&bt->map->stripe_table, i);
 		if (stripe)
 			kfree(stripe);
-		xa_erase(&bt->map->stripe_table, i);
+		xa_erase_irq(&bt->map->stripe_table, i);
 	}
 	biza_dtr_map(bt);
 	biza_free_devs(bt, bt->params->nr_drives);
@@ -762,9 +765,7 @@ static biza_stripe_head_t *biza_get_stripe_head_with_no(struct biza_target *bt, 
 	// Try to get from fshc
 	if (!sh)
 	{
-		sh = xa_load(&bt->fshc, no);
-		if (sh)
-			xa_erase_irq(&bt->fshc, no);
+		sh = xa_erase_irq(&bt->fshc, no);
 	}
 
 	return sh;
@@ -832,7 +833,7 @@ static inline biza_aware_type biza_oz_idx_to_aware_type(struct biza_target *bt, 
 }
 
 // Try to shift the zrwa window left
-static inline bool biza_zrwa_wd_shift(struct biza_target *bt, uint8_t drive_idx, uint8_t oz_idx, uint32_t zone_idx)
+static inline bool biza_zrwa_wd_shift(struct biza_target *bt, uint8_t drive_idx, uint8_t oz_idx, uint32_t zone_idx, ulong *flags)
 {
 	struct biza_dev *dev = &bt->devs[drive_idx];
 	struct biza_zone *zone = &dev->zones[zone_idx];
@@ -858,11 +859,10 @@ static inline bool biza_zrwa_wd_shift(struct biza_target *bt, uint8_t drive_idx,
 			if (lcn == BIZA_MAP_PARITY)
 			{
 				stripe_no = biza_map_pcn_lookup_stripe_no(bt, pcn);
-				sh = xa_load(&bt->fshc, stripe_no);
+				sh = xa_erase(&bt->fshc, stripe_no);
 				if (sh)
 				{
 					// pr_err("!!Free parity buffer, pcn=0x%llx, sh->parity_cache=0x%px\n", pcn, sh->parity_cache);
-					xa_erase(&bt->fshc, stripe_no);
 					biza_free_stripe_head(bt, sh);
 				}
 			}
@@ -891,7 +891,7 @@ static inline bool biza_zrwa_wd_shift(struct biza_target *bt, uint8_t drive_idx,
 			{ // 这个zone使用完了
 				zone->cond = BLK_ZONE_COND_FULL;
 				// pr_err("drive_idx %u, zone_idx %u full\n", drive_idx, dev->open_zones[oz_idx]);
-				spin_unlock_irq(&zone->zlock);
+				spin_unlock_irqrestore(&zone->zlock, *flags);
 
 				up_read(&dev->ozlock);
 				down_write(&dev->ozlock);
@@ -906,7 +906,7 @@ static inline bool biza_zrwa_wd_shift(struct biza_target *bt, uint8_t drive_idx,
 
 				zone_idx = dev->open_zones[oz_idx];
 				zone = &dev->zones[zone_idx];
-				spin_lock_irq(&zone->zlock);
+				spin_lock_irqsave(&zone->zlock, *flags);
 			}
 
 			return true;
@@ -950,7 +950,7 @@ static inline ulong biza_find_empty_zrwa_enry(struct biza_target *bt, uint8_t dr
 }
 
 // test and clear the bit in zrwa window
-static inline bool biza_test_and_clear_zrwa_bit(struct biza_target *bt, sector_t pcn, bool irq)
+static bool biza_test_and_clear_zrwa_bit(struct biza_target *bt, sector_t pcn, bool irq)
 {
 	uint8_t drive_idx;
 	uint32_t zone_idx;
@@ -959,26 +959,30 @@ static inline bool biza_test_and_clear_zrwa_bit(struct biza_target *bt, sector_t
 	struct biza_zone *zone;
 	uint64_t wp_off;
 	ulong bit_off;
+	ulong flags;
 	bool org_bit;
 
 	biza_pcn_to_idx(bt, pcn, &drive_idx, &zone_idx, &offset);
 	dev = &bt->devs[drive_idx];
 	zone = &dev->zones[zone_idx];
 
-	if (irq)
-		spin_lock_irq(&zone->zlock);
-	else
-		spin_lock(&zone->zlock);
+	// if (irq)
+	// 	spin_lock_irq(&zone->zlock);
+	// else
+	// 	spin_lock(&zone->zlock);
+	spin_lock_irqsave(&zone->zlock, flags);
+
 	wp_off = (zone->wp - zone->start) >> bt->params->chunk_size_sector_shift;
 	// wp_off = (atomic64_read(&zone->wp) - zone->start) >> bt->params->chunk_size_sector_shift;
 	bit_off = offset - wp_off;
 	BUG_ON(wp_off + bit_off > bt->params->zone_capacity_chunk);
 	org_bit = test_and_clear_bit(bit_off, zone->zrwa_wd);
 	// pr_err("drive_idx %u, zone_idx %u, wp %llu, wp_off %llu, bit_off %lu, clear, cnt %u, zrwa %x\n", drive_idx, zone_idx, zone->wp, wp_off, bit_off, atomic_inc_return(&zone->debug_cnt), (uint16_t)*zone->zrwa_wd);
-	if (irq)
-		spin_unlock_irq(&zone->zlock);
-	else
-		spin_unlock(&zone->zlock);
+	// if (irq)
+	// 	spin_unlock_irq(&zone->zlock);
+	// else
+	// 	spin_unlock(&zone->zlock);
+	spin_unlock_irqrestore(&zone->zlock, flags);
 
 	return org_bit;
 }
@@ -1021,6 +1025,7 @@ static bool biza_get_zone_write_location(struct biza_target *bt, uint8_t drive_i
 	uint64_t wp_off;
 	uint64_t bit_off;
 	bool org_bit;
+	ulong flags;
 
 	while (1)
 	{
@@ -1031,26 +1036,27 @@ static bool biza_get_zone_write_location(struct biza_target *bt, uint8_t drive_i
 		{
 			up_read(&dev->ozlock);
 			udelay(1);
+			pr_err("Stuck at zone write location drive_idx %u zone_idx %u\n", drive_idx, *zone_idx);
 			continue;
 		}
 
-		spin_lock_irq(&zone->zlock);
+		spin_lock_irqsave(&zone->zlock, flags);
 		wp_off = (zone->wp - zone->start) >> bt->params->chunk_size_sector_shift;
 		// wp_off = (atomic64_read(&zone->wp) - zone->start) >> bt->params->chunk_size_sector_shift;
 		bit_off = biza_find_empty_zrwa_enry(bt, drive_idx, *zone_idx);
 
 		if (bit_off == ~((ulong)0))
 		{
-			if (biza_zrwa_wd_shift(bt, drive_idx, oz_idx, *zone_idx))
+			if (biza_zrwa_wd_shift(bt, drive_idx, oz_idx, *zone_idx, &flags))
 			{
 				*zone_idx = dev->open_zones[oz_idx];
 				zone = &dev->zones[*zone_idx];
-				spin_unlock_irq(&zone->zlock);
+				spin_unlock_irqrestore(&zone->zlock, flags);
 				up_read(&dev->ozlock);
 			}
 			else
 			{
-				spin_unlock_irq(&zone->zlock);
+				spin_unlock_irqrestore(&zone->zlock, flags);
 				up_read(&dev->ozlock);
 				io_schedule_timeout(HZ);
 			}
@@ -1061,13 +1067,13 @@ static bool biza_get_zone_write_location(struct biza_target *bt, uint8_t drive_i
 			// pr_err("drive_idx %u, zone_idx %u, wp %llu, wp_off %llu, bit_off %llu, set, biza_get_zone_write_location, cnt %u, zrwa %x\n", drive_idx, *zone_idx, zone->wp, wp_off, bit_off, atomic_inc_return(&zone->debug_cnt), (uint16_t)*zone->zrwa_wd);
 			if (!org_bit)
 			{
-				spin_unlock_irq(&zone->zlock);
+				spin_unlock_irqrestore(&zone->zlock, flags);
 				up_read(&dev->ozlock);
 				break;
 			}
 			else
 			{
-				spin_unlock_irq(&zone->zlock);
+				spin_unlock_irqrestore(&zone->zlock, flags);
 				up_read(&dev->ozlock);
 			}
 		}
@@ -1282,14 +1288,14 @@ static void stripe_head_endio(biza_stripe_head_t *sh)
 	{
 		/** Add to another list. Release until ZRWA window has slided left. **/
 		sh->ioctx = NULL;
-		xa_store(&bt->fshc, sh->no, sh, GFP_ATOMIC);
+		xa_store_irq(&bt->fshc, sh->no, sh, GFP_ATOMIC);
 	}
 	else
 	{
-		spin_lock(&bt->pshl_lock);
+		spin_lock_irq(&bt->pshl_lock);
 		sh->ioctx = NULL;
 		list_add_tail(&sh->link, &bt->pshl);
-		spin_unlock(&bt->pshl_lock);
+		spin_unlock_irq(&bt->pshl_lock);
 	}
 
 	biza_free_stripe_head_ioctx(shioctx);
@@ -1484,9 +1490,15 @@ static int biza_submit_stripe_head_write(struct biza_target *bt, struct bio *bio
 			{
 				cpu_relax();
 				pcn = biza_map_parity_lookup_pcn(bt, sh->no, i);
-				if (ktime_get_boottime_ns() - time > 10000000000)
+				if (ktime_get_boottime_ns() - time > 20000000000)
 				{
-					BUG_ON(pcn == BIZA_MAP_UNMAPPED || pcn == BIZA_MAP_INVALID);
+					if (pcn == BIZA_MAP_UNMAPPED || pcn == BIZA_MAP_INVALID)
+					{
+						pr_err("Failed to find parity pcn for stripe 0x%llx, parity PCN = 0x%llx, data LCN = 0x%llx\n", sh->no, pcn, sh->ioctx->lcn_start);
+					}
+
+					// BUG_ON(pcn == BIZA_MAP_UNMAPPED || pcn == BIZA_MAP_INVALID);
+					break;
 				}
 			}
 
@@ -1827,8 +1839,12 @@ static int biza_submit_chunk_read(struct biza_target *bt, struct bio *bio, secto
 static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 {
 	sector_t cur_sec, nxt_sec, size, left;
-	sector_t lcn, pcn;
+	sector_t lcn, pcn, test_pcn, offset;
+	uint8_t drive_idx;
+	uint32_t zone_idx;
+	struct biza_zone *zone = NULL;
 	int ret;
+	unsigned int seq;
 
 	left = bio_sectors(bio);
 
@@ -1843,9 +1859,29 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 		size = (nxt_sec - cur_sec) << SECTOR_SHIFT;
 
 		lcn = cur_sec >> bt->params->chunk_size_sector_shift;
-		pcn = biza_map_lcn_lookup_pcn(bt, lcn);
+		while (true)
+		{
+			pcn = biza_map_lcn_lookup_pcn(bt, lcn);
+			if (pcn == BIZA_MAP_UNMAPPED || pcn == BIZA_MAP_INVALID)
+				break;
+			biza_pcn_to_idx(bt, pcn, &drive_idx, &zone_idx, &offset);
+			zone = &bt->devs[drive_idx].zones[zone_idx];
+			down_read(&zone->read_lock);
+			test_pcn = biza_map_lcn_lookup_pcn(bt, lcn);
+			if (test_pcn == pcn)
+				break;
+
+			up_read(&zone->read_lock);
+			pr_err("Hit read/GC conflict! lcn: 0x%llx, dev: %u, zone: %u\n", lcn, drive_idx, zone_idx);
+			cpu_relax();
+		}
 
 		ret = biza_submit_chunk_read(bt, bio, pcn, size);
+		if (!(pcn == BIZA_MAP_UNMAPPED || pcn == BIZA_MAP_INVALID))
+		{
+			up_read(&zone->read_lock);
+		}
+
 		if (ret)
 		{
 			pr_err("dm-biza: io error: cannot submit chunk read");
