@@ -185,18 +185,32 @@ int biza_do_gc(struct biza_target *bt)
 {
 	uint8_t victim_drive_idx;
 	uint32_t victim_zone_idx;
+	struct biza_zone *src_zone = NULL;
 	int ret = 0;
 	// pr_err("Doing GC... out\n");
 	ret = biza_select_victim(bt, &victim_drive_idx, &victim_zone_idx);
 	if (ret)
 	{
+		src_zone = &bt->devs[victim_drive_idx].zones[victim_zone_idx];
 		// pr_err("Doing GC... in\n");
-		down_write(&bt->devs[victim_drive_idx].zones[victim_zone_idx].read_lock);
+		// down_write(&bt->devs[victim_drive_idx].zones[victim_zone_idx].read_lock);
 
+		atomic64_inc(&src_zone->doing_gc);
+		if (atomic64_read(&src_zone->doing_read))
+		{
+			pr_err("Dev %u zone %u is reading. GC on hold...\n", victim_drive_idx, victim_zone_idx);
+			atomic64_dec(&src_zone->doing_gc);
+			while (atomic64_read(&src_zone->doing_read))
+			{
+				cpu_relax();
+				cond_resched();
+			}
+			atomic64_inc(&src_zone->doing_gc);
+		}
 		biza_gc_move_valid_data(bt, victim_drive_idx, victim_zone_idx);
 		biza_reset_zone(bt, &bt->devs[victim_drive_idx], victim_zone_idx, false);
-
-		up_write(&bt->devs[victim_drive_idx].zones[victim_zone_idx].read_lock);
+		atomic64_dec(&src_zone->doing_gc);
+		// up_write(&bt->devs[victim_drive_idx].zones[victim_zone_idx].read_lock);
 		// pr_err("Finished GC... in\n");
 	}
 

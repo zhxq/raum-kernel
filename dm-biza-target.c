@@ -145,7 +145,9 @@ static int biza_init_zone(struct blk_zone *blkz, unsigned int idx, void *data)
 	zone->nr_invalid_chunks = 0;
 
 	init_rwsem(&zone->read_lock);
-	seqlock_init(&zone->read_seq_lock);
+
+	atomic64_set(&zone->doing_gc, 0);
+	atomic64_set(&zone->doing_read, 0);
 
 	dev->capacity += zone->capacity;
 	dev->len += zone->len;
@@ -1325,6 +1327,7 @@ static void biza_chunkio_endio(struct bio *chunkio)
 	uint8_t drive_idx;
 	uint32_t zone_idx;
 	uint64_t offset;
+	struct biza_zone *zone = NULL;
 	int ret;
 
 	if (unlikely(status != BLK_STS_OK))
@@ -1364,6 +1367,10 @@ static void biza_chunkio_endio(struct bio *chunkio)
 	else if (chunkioctx->type == BIZA_DATA_READ)
 	{
 		bio = chunkioctx->bio;
+
+		biza_pcn_to_idx(chunkioctx->bt, chunkioctx->pcn, &drive_idx, &zone_idx, &offset);
+		zone = &chunkioctx->bt->devs[drive_idx].zones[zone_idx];
+		atomic64_dec(&zone->doing_read);
 
 		kfree(chunkioctx);
 		bio_put(chunkio);
@@ -1845,6 +1852,7 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 	struct biza_zone *zone = NULL;
 	int ret;
 	unsigned int seq;
+	bool read_inc = false;
 
 	left = bio_sectors(bio);
 
@@ -1853,34 +1861,38 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 
 	while (left > 0)
 	{
+		read_inc = false;
 		cur_sec = bio->bi_iter.bi_sector;
 		// e.g., chunk = 128 sec, 0->128, 32->128
 		nxt_sec = min(round_up(cur_sec + 1, bt->params->chunk_size_sector), bio_end_sector(bio));
 		size = (nxt_sec - cur_sec) << SECTOR_SHIFT;
 
 		lcn = cur_sec >> bt->params->chunk_size_sector_shift;
-		while (true)
-		{
-			pcn = biza_map_lcn_lookup_pcn(bt, lcn);
-			if (pcn == BIZA_MAP_UNMAPPED || pcn == BIZA_MAP_INVALID)
-				break;
-			biza_pcn_to_idx(bt, pcn, &drive_idx, &zone_idx, &offset);
-			zone = &bt->devs[drive_idx].zones[zone_idx];
-			down_read(&zone->read_lock);
-			test_pcn = biza_map_lcn_lookup_pcn(bt, lcn);
-			if (test_pcn == pcn)
-				break;
 
-			up_read(&zone->read_lock);
-			pr_err("Hit read/GC conflict! lcn: 0x%llx, dev: %u, zone: %u\n", lcn, drive_idx, zone_idx);
-			cpu_relax();
+		pcn = biza_map_lcn_lookup_pcn(bt, lcn);
+		if (!(pcn == BIZA_MAP_UNMAPPED ||
+			  pcn == BIZA_MAP_INVALID))
+		{
+			biza_pcn_to_idx(bt, pcn, &drive_idx, &zone_idx,
+							&offset);
+			zone = &bt->devs[drive_idx].zones[zone_idx];
+			atomic64_inc(&zone->doing_read);
+			if (atomic64_read(&zone->doing_gc))
+			{
+				pr_err("Hit read/GC conflict! lcn: 0x%llx, dev: %u, zone: %u\n", lcn, drive_idx, zone_idx);
+				atomic64_dec(&zone->doing_read);
+				while (atomic64_read(&zone->doing_gc))
+				{
+					cpu_relax();
+					cond_resched();
+				}
+				atomic64_inc(&zone->doing_read);
+				pcn = biza_map_lcn_lookup_pcn(bt, lcn);
+			}
+			read_inc = true;
 		}
 
 		ret = biza_submit_chunk_read(bt, bio, pcn, size);
-		if (!(pcn == BIZA_MAP_UNMAPPED || pcn == BIZA_MAP_INVALID))
-		{
-			up_read(&zone->read_lock);
-		}
 
 		if (ret)
 		{

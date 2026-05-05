@@ -130,7 +130,8 @@ struct biza_zone
 
 	spinlock_t zlock;
 	struct rw_semaphore read_lock;
-	seqlock_t read_seq_lock;
+	atomic64_t doing_read;
+	atomic64_t doing_gc;
 };
 
 typedef enum biza_iso_dm_state
