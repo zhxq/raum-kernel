@@ -374,6 +374,7 @@ struct biza_target
 	// statistics for write amplification (in sector, i.e., 512B)
 	atomic64_t user_send;
 	atomic64_t user_read;
+	atomic64_t user_read_reqs;
 	atomic64_t data_write;
 	atomic64_t parity_write;
 	atomic64_t oop_parity_write;

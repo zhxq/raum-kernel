@@ -606,6 +606,7 @@ static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	// statistics for write amplification
 	atomic64_set(&bt->user_send, 0);
 	atomic64_set(&bt->user_read, 0);
+	atomic64_set(&bt->user_read_reqs, 0);
 	atomic64_set(&bt->data_write, 0);
 	atomic64_set(&bt->gc_write, 0);
 	atomic64_set(&bt->num_chunks, 0);
@@ -1812,6 +1813,13 @@ static int biza_submit_chunk_read(struct biza_target *bt, struct bio *bio, secto
 	}
 	else
 	{
+
+		if (WRITE_AMP_STAT)
+		{
+			atomic64_add(size, &bt->user_read);
+			atomic64_inc(&bt->user_read_reqs);
+		}
+
 		biza_pcn_to_idx(bt, pcn, &drive_idx, &zone_idx, &offset);
 
 		chunkio = bio_clone_fast(bio, GFP_NOIO, &bt->bio_set);
@@ -1856,9 +1864,6 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 
 	left = bio_sectors(bio);
 
-	if (WRITE_AMP_STAT)
-		atomic64_add(left, &bt->user_read);
-
 	while (left > 0)
 	{
 		read_inc = false;
@@ -1886,8 +1891,12 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 					cpu_relax();
 					cond_resched();
 				}
-				atomic64_inc(&zone->doing_read);
 				pcn = biza_map_lcn_lookup_pcn(bt, lcn);
+				biza_pcn_to_idx(bt, pcn, &drive_idx,
+								&zone_idx, &offset);
+				zone = &bt->devs[drive_idx]
+							.zones[zone_idx];
+				atomic64_inc(&zone->doing_read);
 			}
 			read_inc = true;
 		}
