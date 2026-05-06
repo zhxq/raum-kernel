@@ -311,9 +311,12 @@ void biza_print_gc_stats(struct work_struct *work)
 		container_of(work, struct biza_gc, stats_work.work);
 	struct biza_target *bt = gc->bt;
 	if (WRITE_AMP_STAT) {
-		pr_err("user_send %lld, user_read %lld, data write %lld, gc write %lld, num chunks %lld, parity write %lld, data in place update %lld, parity in place update %lld, data flush %lld, parity flush %lld\n",
+		pr_err("user_send %lld, ssd zone user_read %lld bytes/%lld requests, raum user_read %lld bytes/%lld requests, data write %lld, gc write %lld, num chunks %lld, parity write %lld, data in place update %lld, parity in place update %lld, data flush %lld, parity flush %lld\n",
 		       atomic64_read(&bt->user_send),
 		       atomic64_read(&bt->user_read),
+		       atomic64_read(&bt->user_read_reqs),
+		       atomic64_read(&bt->user_raum_read),
+		       atomic64_read(&bt->user_raum_read_reqs),
 		       atomic64_read(&bt->data_write),
 		       atomic64_read(&bt->gc_write),
 		       atomic64_read(&bt->num_chunks),
@@ -328,6 +331,14 @@ void biza_print_gc_stats(struct work_struct *work)
 		//        (bt->devs->zones[0].capacity >>
 		// 	bt->params->chunk_size_sector_shift) /
 		// 	       8);
+		// pr_err("write reqs by size: %lldx4K/%lldx8K/%lldx16K/%lldx32K/%lldx64K/%lldx128K/%lldx256K\n",
+		//        atomic64_read(&bt->write_4k),
+		//        atomic64_read(&bt->write_8k),
+		//        atomic64_read(&bt->write_16k),
+		//        atomic64_read(&bt->write_32k),
+		//        atomic64_read(&bt->write_64k),
+		//        atomic64_read(&bt->write_128k),
+		//        atomic64_read(&bt->write_256k));
 		pr_err("Total free zones: %u/%u, free zones percent: %u%%, limit high: %u%%\n",
 		       bt->gc->nr_free_zones,
 		       bt->params->nr_zones_per_drive * bt->params->nr_drives,

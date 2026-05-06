@@ -512,6 +512,9 @@ struct biza_target {
 	// statistics for write amplification (in sector, i.e., 512B)
 	atomic64_t user_send;
 	atomic64_t user_read;
+	atomic64_t user_read_reqs;
+	atomic64_t user_raum_read;
+	atomic64_t user_raum_read_reqs;
 	atomic64_t data_write;
 	atomic64_t gc_write;
 	atomic64_t num_chunks;
@@ -520,6 +523,14 @@ struct biza_target {
 	atomic64_t parity_in_place_update;
 	atomic64_t data_flush;
 	atomic64_t parity_flush;
+
+	atomic64_t write_256k;
+	atomic64_t write_128k;
+	atomic64_t write_64k;
+	atomic64_t write_32k;
+	atomic64_t write_16k;
+	atomic64_t write_8k;
+	atomic64_t write_4k;
 
 	atomic64_t previous_print_time;
 };

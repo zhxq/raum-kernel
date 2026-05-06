@@ -1217,6 +1217,9 @@ static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	// statistics for write amplification
 	atomic64_set(&bt->user_send, 0);
 	atomic64_set(&bt->user_read, 0);
+	atomic64_set(&bt->user_read_reqs, 0);
+	atomic64_set(&bt->user_raum_read, 0);
+	atomic64_set(&bt->user_raum_read_reqs, 0);
 	atomic64_set(&bt->data_write, 0);
 	atomic64_set(&bt->gc_write, 0);
 	atomic64_set(&bt->num_chunks, 0);
@@ -1225,6 +1228,14 @@ static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	atomic64_set(&bt->parity_in_place_update, 0);
 	atomic64_set(&bt->data_flush, 0);
 	atomic64_set(&bt->parity_flush, 0);
+
+	atomic64_set(&bt->write_256k, 0);
+	atomic64_set(&bt->write_128k, 0);
+	atomic64_set(&bt->write_64k, 0);
+	atomic64_set(&bt->write_32k, 0);
+	atomic64_set(&bt->write_16k, 0);
+	atomic64_set(&bt->write_8k, 0);
+	atomic64_set(&bt->write_4k, 0);
 
 	atomic64_set(&bt->previous_print_time, ktime_get_boottime_ns());
 
@@ -2320,8 +2331,44 @@ biza_submit_stripe_head_write(struct biza_target *bt, struct bio *bio,
 
 	BUG_ON(shioctx == NULL);
 
-	if (WRITE_AMP_STAT)
-		atomic64_add(chunk_cnt, &bt->num_chunks);
+	// if (WRITE_AMP_STAT) {
+	// 	atomic64_add(chunk_cnt, &bt->num_chunks);
+	// 	switch (chunks_in_shard) {
+	// 	case 64:
+	// 		atomic_add(chunk_cnt, &bt->write_256k);
+	// 		break;
+
+	// 	case 32:
+	// 		atomic_add(chunk_cnt, &bt->write_128k);
+	// 		break;
+
+	// 	case 16:
+	// 		atomic_add(chunk_cnt, &bt->write_64k);
+	// 		break;
+
+	// 	case 8:
+	// 		atomic_add(chunk_cnt, &bt->write_32k);
+	// 		break;
+
+	// 	case 4:
+	// 		atomic_add(chunk_cnt, &bt->write_16k);
+	// 		break;
+
+	// 	case 2:
+	// 		atomic_add(chunk_cnt, &bt->write_8k);
+	// 		break;
+
+	// 	case 1:
+	// 		atomic_add(chunk_cnt, &bt->write_4k);
+	// 		break;
+
+	// 	default:
+	// 		pr_err("Error chunks per shard: %llu\n",
+	// 		       chunks_in_shard);
+	// 		BUG_ON(1);
+	// 		break;
+	// 	}
+	// }
 
 	// send data chunk I/O
 	for (i = 0; i < chunk_cnt; ++i) {
@@ -3122,12 +3169,21 @@ static int biza_submit_chunk_read(struct biza_target *bt, struct bio *bio,
 		swap(bio->bi_iter.bi_size, size);
 	} else {
 		if (biza_check_pcn_in_raum(bt, pcn)) {
+			if (WRITE_AMP_STAT) {
+				atomic64_add(size, &bt->user_raum_read);
+				atomic64_inc(&bt->user_raum_read_reqs);
+			}
 			biza_raum_pcn_to_idx(bt, pcn, &drive_idx, &offset);
 			bi_sector = biza_raum_idx_to_sector(bt, offset);
 			bdev = bt->raum_devs[drive_idx].bdev;
 			log("Reading RAUM lcn 0x%llx pcn 0x%llx drive %u offset 0x%llx sector 0x%llx\n",
 			    lcn, pcn, drive_idx, offset, bi_sector);
 		} else {
+			if (WRITE_AMP_STAT) {
+				atomic64_add(size, &bt->user_read);
+				atomic64_inc(&bt->user_read_reqs);
+			}
+
 			biza_pcn_to_idx(bt, pcn, &drive_idx, &zone_idx,
 					&offset);
 			bi_sector = biza_idx_to_sector(bt, drive_idx, zone_idx,
@@ -3185,9 +3241,6 @@ static int biza_handle_read(struct biza_target *bt, struct bio *bio)
 
 	left = bio_sectors(bio);
 	// pr_err("Got read: 0x%llx %llu sectors\n", left, left);
-
-	if (WRITE_AMP_STAT)
-		atomic64_add(left, &bt->user_read);
 
 	while (left > 0) {
 		data_in_raum = false;
