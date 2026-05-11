@@ -895,6 +895,22 @@ static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
 	struct biza_target *bt = NULL;
 	struct block_device *bdev = NULL;
+	if (RAUM_LARGER_CHUNK_PAGES > RAUM_MAX_LARGER_CHUNK_PAGES) {
+		ti->error =
+			"RAUM_LARGER_CHUNK_PAGES is larger than RAUM_MAX_LARGE_CHUNK_PAGES!",
+		pr_err("RAUM_LARGER_CHUNK_PAGES (%d), RAUM_MAX_LARGE_CHUNK_PAGES (%d), Division: %d, log: %d",
+		       RAUM_LARGER_CHUNK_PAGES, RAUM_MAX_LARGER_CHUNK_PAGES,
+		       RAUM_MAX_LARGER_CHUNK_PAGES / RAUM_LARGER_CHUNK_PAGES,
+		       ilog2((int)RAUM_MAX_LARGER_CHUNK_PAGES /
+			     RAUM_LARGER_CHUNK_PAGES));
+		goto err;
+	}
+	// This value is for sensitivity analysis
+	// If we change RAUM_LARGER_CHUNK_PAGES to anything between 1 and 64,
+	// We need this compensation value to calculate the correct order.
+	uint large_chunk_order_comp = ilog2((int)RAUM_MAX_LARGER_CHUNK_PAGES /
+					    RAUM_LARGER_CHUNK_PAGES);
+
 	int ret = 0, i = 0;
 
 	if (argc < NUM_DM_BIZA_PARAM + MIN_DEVS) {
@@ -1137,67 +1153,96 @@ static int biza_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
 	// Initialize parity cache
-	ret = biza_ctr_mempool(&bt->pcpool, BIZA_PARITY_CACHE_SIZE,
-			       bt->params->chunk_size_sector_shift -
-				       PAGE_SECTORS_SHIFT);
-	if (ret) {
-		ti->error = "Failed to create parity cache";
-		ret = -ENOMEM;
-		goto err_dc;
-	}
-
-	ret = biza_ctr_mempool(&bt->largepcpool64, BIZA_PARITY_CACHE_SIZE,
-			       bt->params->max_chunk_size_sector_shift - 0 -
-				       PAGE_SECTORS_SHIFT);
-	if (ret) {
-		ti->error = "Failed to create large parity cache";
-		ret = -ENOMEM;
-		goto err_dc;
-	}
-
-	ret = biza_ctr_mempool(&bt->largepcpool32, BIZA_PARITY_CACHE_SIZE,
-			       bt->params->max_chunk_size_sector_shift - 1 -
-				       PAGE_SECTORS_SHIFT);
-	if (ret) {
-		ti->error = "Failed to create large parity cache";
-		ret = -ENOMEM;
-		goto err_dc;
-	}
-
-	ret = biza_ctr_mempool(&bt->largepcpool16, BIZA_PARITY_CACHE_SIZE,
-			       bt->params->max_chunk_size_sector_shift - 2 -
-				       PAGE_SECTORS_SHIFT);
-	if (ret) {
-		ti->error = "Failed to create large parity cache";
-		ret = -ENOMEM;
-		goto err_dc;
-	}
-
-	ret = biza_ctr_mempool(&bt->largepcpool8, BIZA_PARITY_CACHE_SIZE,
-			       bt->params->max_chunk_size_sector_shift - 3 -
-				       PAGE_SECTORS_SHIFT);
-	if (ret) {
-		ti->error = "Failed to create large parity cache";
-		ret = -ENOMEM;
-		goto err_dc;
-	}
-
-	ret = biza_ctr_mempool(&bt->largepcpool4, BIZA_PARITY_CACHE_SIZE,
-			       bt->params->max_chunk_size_sector_shift - 4 -
-				       PAGE_SECTORS_SHIFT);
-	if (ret) {
-		ti->error = "Failed to create large parity cache";
-		ret = -ENOMEM;
-		goto err_dc;
-	}
-
-	ret = biza_ctr_mempool(&bt->largepcpool2, BIZA_PARITY_CACHE_SIZE,
+	switch (RAUM_LARGER_CHUNK_PAGES) {
+	case 64:
+		ret = biza_ctr_mempool(
+			&bt->largepcpool64, BIZA_PARITY_CACHE_SIZE,
+			bt->params->max_chunk_size_sector_shift - 0 -
+				PAGE_SECTORS_SHIFT + large_chunk_order_comp);
+		if (ret) {
+			ti->error =
+				"Failed to create large parity cache - 64 page size";
+			ret = -ENOMEM;
+			goto err_dc;
+		}
+		fallthrough;
+	case 32:
+		ret = biza_ctr_mempool(
+			&bt->largepcpool32, BIZA_PARITY_CACHE_SIZE,
+			bt->params->max_chunk_size_sector_shift - 1 -
+				PAGE_SECTORS_SHIFT + large_chunk_order_comp);
+		if (ret) {
+			ti->error =
+				"Failed to create large parity cache - 32 page size";
+			ret = -ENOMEM;
+			goto err_dc;
+		}
+		fallthrough;
+	case 16:
+		ret = biza_ctr_mempool(
+			&bt->largepcpool16, BIZA_PARITY_CACHE_SIZE,
+			bt->params->max_chunk_size_sector_shift - 2 -
+				PAGE_SECTORS_SHIFT + large_chunk_order_comp);
+		if (ret) {
+			ti->error =
+				"Failed to create large parity cache - 16 page size";
+			ret = -ENOMEM;
+			goto err_dc;
+		}
+		fallthrough;
+	case 8:
+		ret = biza_ctr_mempool(
+			&bt->largepcpool8, BIZA_PARITY_CACHE_SIZE,
+			bt->params->max_chunk_size_sector_shift - 3 -
+				PAGE_SECTORS_SHIFT + large_chunk_order_comp);
+		if (ret) {
+			ti->error =
+				"Failed to create large parity cache - 8 page size";
+			ret = -ENOMEM;
+			goto err_dc;
+		}
+		fallthrough;
+	case 4:
+		ret = biza_ctr_mempool(
+			&bt->largepcpool4, BIZA_PARITY_CACHE_SIZE,
+			bt->params->max_chunk_size_sector_shift - 4 -
+				PAGE_SECTORS_SHIFT + large_chunk_order_comp);
+		if (ret) {
+			ti->error =
+				"Failed to create large parity cache - 4 page size";
+			ret = -ENOMEM;
+			goto err_dc;
+		}
+		fallthrough;
+	case 2:
+		ret = biza_ctr_mempool(
+			&bt->largepcpool2, BIZA_PARITY_CACHE_SIZE,
+			bt->params->max_chunk_size_sector_shift - 5 -
+				PAGE_SECTORS_SHIFT + large_chunk_order_comp);
+		if (ret) {
+			ti->error =
+				"Failed to create large parity cache - 2 page size",
+			pr_err("Error order: %d, max_shift: %d, page_sector_shift: %d, comp: %d",
 			       bt->params->max_chunk_size_sector_shift - 5 -
-				       PAGE_SECTORS_SHIFT);
-	if (ret) {
-		ti->error = "Failed to create large parity cache";
-		ret = -ENOMEM;
-		goto err_dc;
+				       PAGE_SECTORS_SHIFT +
+				       large_chunk_order_comp,
+			       bt->params->max_chunk_size_sector_shift,
+			       PAGE_SECTORS_SHIFT, large_chunk_order_comp);
+			ret = -ENOMEM;
+			goto err_dc;
+		}
+		fallthrough;
+	default:
+		ret = biza_ctr_mempool(&bt->pcpool, BIZA_PARITY_CACHE_SIZE,
+				       bt->params->chunk_size_sector_shift -
+					       PAGE_SECTORS_SHIFT);
+		if (ret) {
+			ti->error =
+				"Failed to create parity cache - 1 page size";
+			ret = -ENOMEM;
+			goto err_dc;
+		}
+		break;
 	}
 
 	// Initialize pred context (i.e., zone group selector related data structures)
